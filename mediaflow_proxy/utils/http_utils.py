@@ -31,12 +31,11 @@ class DownloadError(Exception):
         super().__init__(message)
 
 
-def create_httpx_client(follow_redirects: bool = True, **kwargs) -> httpx.AsyncClient:
-    """Creates an HTTPX client with configured proxy routing"""
-    mounts = settings.transport_config.get_mounts()
-    kwargs.setdefault("timeout", settings.transport_config.timeout)
-    client = httpx.AsyncClient(mounts=mounts, follow_redirects=follow_redirects, **kwargs)
-    return client
+from mediaflow_proxy.utils.http_client import HttpClientManager
+
+def get_httpx_client() -> httpx.AsyncClient:
+    """Returns the global HTTPX client"""
+    return HttpClientManager.get_client()
 
 
 @retry(
@@ -47,22 +46,9 @@ def create_httpx_client(follow_redirects: bool = True, **kwargs) -> httpx.AsyncC
 async def fetch_with_retry(client, method, url, headers, follow_redirects=True, **kwargs):
     """
     Fetches a URL with retry logic.
-
-    Args:
-        client (httpx.AsyncClient): The HTTP client to use for the request.
-        method (str): The HTTP method to use (e.g., GET, POST).
-        url (str): The URL to fetch.
-        headers (dict): The headers to include in the request.
-        follow_redirects (bool, optional): Whether to follow redirects. Defaults to True.
-        **kwargs: Additional arguments to pass to the request.
-
-    Returns:
-        httpx.Response: The HTTP response.
-
-    Raises:
-        DownloadError: If the request fails after retries.
     """
     try:
+        # Use simple request if client is provided, otherwise specific logic could go here
         response = await client.request(method, url, headers=headers, follow_redirects=follow_redirects, **kwargs)
         response.raise_for_status()
         return response
@@ -81,12 +67,9 @@ async def fetch_with_retry(client, method, url, headers, follow_redirects=True, 
 
 
 class Streamer:
-    def __init__(self, client):
+    def __init__(self, client: httpx.AsyncClient):
         """
         Initializes the Streamer with an HTTP client.
-
-        Args:
-            client (httpx.AsyncClient): The HTTP client to use for streaming.
         """
         self.client = client
         self.response = None
@@ -104,11 +87,6 @@ class Streamer:
     async def create_streaming_response(self, url: str, headers: dict):
         """
         Creates and sends a streaming request.
-
-        Args:
-            url (str): The URL to stream from.
-            headers (dict): The headers to include in the request.
-
         """
         try:
             request = self.client.build_request("GET", url, headers=headers)
@@ -153,7 +131,7 @@ class Streamer:
                     ncols=100,
                     mininterval=1,
                 ) as self.progress_bar:
-                    async for chunk in self.response.aiter_bytes():
+                    async for chunk in self.response.aiter_bytes(chunk_size=settings.stream_chunk_size):
                         yield chunk
                         chunk_size = len(chunk)
                         self.bytes_transferred += chunk_size
@@ -162,7 +140,7 @@ class Streamer:
                         )
                         self.progress_bar.update(chunk_size)
             else:
-                async for chunk in self.response.aiter_bytes():
+                async for chunk in self.response.aiter_bytes(chunk_size=settings.stream_chunk_size):
                     yield chunk
                     self.bytes_transferred += len(chunk)
 
@@ -190,7 +168,7 @@ class Streamer:
         except Exception as e:
             logger.error(f"Error streaming content: {e}")
             raise
-
+    
     @staticmethod
     def format_bytes(size) -> str:
         power = 2**10
@@ -214,13 +192,6 @@ class Streamer:
     async def get_text(self, url: str, headers: dict):
         """
         Sends a GET request to a URL and returns the response text.
-
-        Args:
-            url (str): The URL to send the GET request to.
-            headers (dict): The headers to include in the request.
-
-        Returns:
-            str: The response text.
         """
         try:
             self.response = await fetch_with_retry(self.client, "GET", url, headers)
@@ -230,63 +201,42 @@ class Streamer:
 
     async def close(self):
         """
-        Closes the HTTP client and response.
+        Closes the response object ONLY.
+        The client should NOT be closed here as it is shared.
         """
         if self.response:
             await self.response.aclose()
         if self.progress_bar:
             self.progress_bar.close()
-        await self.client.aclose()
+        # Do NOT close the shared client
 
 
 async def download_file_with_retry(url: str, headers: dict):
     """
-    Downloads a file with retry logic.
-
-    Args:
-        url (str): The URL of the file to download.
-        headers (dict): The headers to include in the request.
-
-    Returns:
-        bytes: The downloaded file content.
-
-    Raises:
-        DownloadError: If the download fails after retries.
+    Downloads a file with retry logic using the global client.
     """
-    async with create_httpx_client() as client:
-        try:
-            response = await fetch_with_retry(client, "GET", url, headers)
-            return response.content
-        except DownloadError as e:
-            logger.error(f"Failed to download file: {e}")
-            raise e
-        except tenacity.RetryError as e:
-            raise DownloadError(502, f"Failed to download file: {e.last_attempt.result()}")
+    client = HttpClientManager.get_client()
+    try:
+        response = await fetch_with_retry(client, "GET", url, headers)
+        return response.content
+    except DownloadError as e:
+        logger.error(f"Failed to download file: {e}")
+        raise e
+    except tenacity.RetryError as e:
+        raise DownloadError(502, f"Failed to download file: {e.last_attempt.result()}")
 
 
 async def request_with_retry(method: str, url: str, headers: dict, **kwargs) -> httpx.Response:
     """
-    Sends an HTTP request with retry logic.
-
-    Args:
-        method (str): The HTTP method to use (e.g., GET, POST).
-        url (str): The URL to send the request to.
-        headers (dict): The headers to include in the request.
-        **kwargs: Additional arguments to pass to the request.
-
-    Returns:
-        httpx.Response: The HTTP response.
-
-    Raises:
-        DownloadError: If the request fails after retries.
+    Sends an HTTP request with retry logic using the global client.
     """
-    async with create_httpx_client() as client:
-        try:
-            response = await fetch_with_retry(client, method, url, headers, **kwargs)
-            return response
-        except DownloadError as e:
-            logger.error(f"Failed to download file: {e}")
-            raise
+    client = HttpClientManager.get_client()
+    try:
+        response = await fetch_with_retry(client, method, url, headers, **kwargs)
+        return response
+    except DownloadError as e:
+        logger.error(f"Failed to download file: {e}")
+        raise
 
 
 def encode_mediaflow_proxy_url(

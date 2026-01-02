@@ -102,7 +102,10 @@ async def process_segment(
     if key_id and key:
         # For DRM protected content
         now = time.time()
-        decrypted_content = decrypt_segment(init_content, segment_content, key_id, key)
+        loop = asyncio.get_running_loop()
+        decrypted_content = await loop.run_in_executor(
+            None, decrypt_segment, init_content, segment_content, key_id, key
+        )
         logger.info(f"Decryption of {mimetype} segment took {time.time() - now:.4f} seconds")
     else:
         # For non-DRM protected content, we just concatenate init and segment content

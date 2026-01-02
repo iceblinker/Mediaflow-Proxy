@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  mediaflow-proxy:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: mediaflow-proxy:god-mode
+    container_name: mediaflow-proxy
+    restart: unless-stopped
+    # Expose 8888 for Caddy in ai_network to reach it, or map it if needed. 
+    # Usually strictly internal if Caddy is in same net, but mapping is safe for debugging.
+    ports:
+      - "8888:8888"
+    environment:
+      - API_PASSWORD=${API_PASSWORD:-mediaflow}
+      - WORKERS=${WORKERS:-5}
+      - ENABLE_HLS_PREBUFFER=true
+      - HLS_PREBUFFER_SEGMENTS=8
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    networks:
+      - media-net
+      - ai_network
+
+  redis:
+    image: redis:alpine
+    container_name: mediaflow-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - media-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mediaflow-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboard.json:/var/lib/grafana/dashboards/mediaflow.json
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel
+    networks:
+      - media-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mediaflow-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - media-net
+
+networks:
+  media-net:
+    driver: bridge
+  ai_network:
+    external: true
+
+volumes:
+  redis_data:
+  grafana_data:
+  prometheus_data:

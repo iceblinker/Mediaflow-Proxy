@@ -16,7 +16,7 @@ speedtest_service = SpeedTestService()
 @speedtest_router.get("/", summary="Show browser speed test interface")
 async def show_speedtest_page():
     """Return the browser-based speed test HTML interface."""
-    return RedirectResponse(url="/speedtest.html")
+    return RedirectResponse(url="/static/speedtest.html")
 
 
 @speedtest_router.post("/config", summary="Get browser speed test configuration")

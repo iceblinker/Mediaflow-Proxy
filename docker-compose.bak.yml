@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - media-net
+      - ai_network
+
   mediaflow-proxy:
     # Use local build to include 4K optimizations (chunk size, pre-buffer defaults)
     build: .
@@ -44,13 +60,12 @@ services:
         reservations:
           memory: 512M
 
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
-
 networks:
   media-net:
     driver: bridge
   ai_network:
     external: true
+
+volumes:
+  caddy_data:
+  caddy_config:

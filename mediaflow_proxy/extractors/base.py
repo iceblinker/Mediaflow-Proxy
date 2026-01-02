@@ -6,7 +6,9 @@ import httpx
 import logging
 
 from mediaflow_proxy.configs import settings
-from mediaflow_proxy.utils.http_utils import create_httpx_client, DownloadError
+from mediaflow_proxy.configs import settings
+from mediaflow_proxy.utils.http_utils import get_httpx_client, DownloadError
+from mediaflow_proxy.utils.circuit_breaker import get_circuit_breaker, get_domain_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +47,39 @@ class BaseExtractor(ABC):
         **kwargs,
     ) -> httpx.Response:
         """
-        Make HTTP request with retry and timeout support.
+        Wrapper for _execute_request that applies Circuit Breaker pattern.
+        """
+        domain = get_domain_from_url(url)
+        cb = get_circuit_breaker(domain)
 
-        Parameters
-        ----------
-        timeout : float | None
-            Seconds to wait for the request (applied to httpx.Timeout). Defaults to 15s.
-        retries : int
-            Number of attempts for transient errors.
-        backoff_factor : float
-            Base for exponential backoff between retries.
-        raise_on_status : bool
-            If True, HTTP non-2xx raises DownloadError (preserves status code).
+        if not cb.allow_request():
+            raise ExtractorError(f"Circuit Breaker OPEN for {domain} (Too many failures)")
+
+        try:
+            response = await self._execute_request(
+                url, method, headers, timeout, retries, backoff_factor, raise_on_status, **kwargs
+            )
+            cb.record_success()
+            return response
+        except Exception:
+            # We record a failure for any exception that propagates out of the retry logic
+            # This includes exhausted retries, 5xx errors (if raise_on_status=True), etc.
+            cb.record_failure()
+            raise
+
+    async def _execute_request(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[Dict] = None,
+        timeout: Optional[float] = None,
+        retries: int = 3,
+        backoff_factor: float = 0.5,
+        raise_on_status: bool = True,
+        **kwargs,
+    ) -> httpx.Response:
+        """
+        Make HTTP request with retry and timeout support.
         """
         attempt = 0
         last_exc = None
@@ -70,32 +93,33 @@ class BaseExtractor(ABC):
 
         while attempt < retries:
             try:
-                async with create_httpx_client(timeout=timeout_cfg) as client:
-                    response = await client.request(
-                        method,
-                        url,
-                        headers=request_headers,
-                        **kwargs,
-                    )
+                client = get_httpx_client()
+                response = await client.request(
+                    method,
+                    url,
+                    headers=request_headers,
+                    timeout=timeout_cfg,
+                    **kwargs,
+                )
 
-                    if raise_on_status:
+                if raise_on_status:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as e:
+                        # Provide a short body preview for debugging
+                        body_preview = ""
                         try:
-                            response.raise_for_status()
-                        except httpx.HTTPStatusError as e:
-                            # Provide a short body preview for debugging
-                            body_preview = ""
-                            try:
-                                body_preview = e.response.text[:500]
-                            except Exception:
-                                body_preview = "<unreadable body>"
-                            logger.debug(
-                                "HTTPStatusError for %s (status=%s) -- body preview: %s",
-                                url,
-                                e.response.status_code,
-                                body_preview,
-                            )
-                            raise DownloadError(e.response.status_code, f"HTTP error {e.response.status_code} while requesting {url}")
-                    return response
+                            body_preview = e.response.text[:500]
+                        except Exception:
+                            body_preview = "<unreadable body>"
+                        logger.debug(
+                            "HTTPStatusError for %s (status=%s) -- body preview: %s",
+                            url,
+                            e.response.status_code,
+                            body_preview,
+                        )
+                        raise DownloadError(e.response.status_code, f"HTTP error {e.response.status_code} while requesting {url}")
+                return response
 
             except DownloadError:
                 # Do not retry on explicit HTTP status errors (they are intentional)
@@ -121,3 +145,13 @@ class BaseExtractor(ABC):
     async def extract(self, url: str, **kwargs) -> Dict[str, Any]:
         """Extract final URL and required headers."""
         pass
+
+    @classmethod
+    @abstractmethod
+    def can_handle(cls, url: str) -> bool:
+        """Check if this extractor can handle the given URL."""
+        pass
+
+    @property
+    def name(self) -> str:
+        return self.__class__.__name__.replace("Extractor", "")

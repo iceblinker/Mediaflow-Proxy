@@ -3,7 +3,7 @@ import psutil
 from typing import Dict, Optional, List
 from urllib.parse import urljoin
 import xmltodict
-from mediaflow_proxy.utils.http_utils import create_httpx_client
+from mediaflow_proxy.utils.http_utils import get_httpx_client
 from mediaflow_proxy.configs import settings
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class DASHPreBuffer:
         
         # Track segment URLs for each adaptation set
         self.adaptation_segments: Dict[str, List[str]] = {}
-        self.client = create_httpx_client()
+        self.client = get_httpx_client()
     
     def _get_memory_usage_percent(self) -> float:
         """
@@ -366,7 +366,8 @@ class DASHPreBuffer:
     
     async def close(self) -> None:
         """Close the pre-buffer system."""
-        await self.client.aclose()
+        # Do not close the shared client
+        pass
 
 
 # Global DASH pre-buffer instance

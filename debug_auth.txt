@@ -1,0 +1,6 @@
+DEBUG: Server Password: 'test'
+DEBUG: Received Query Key: 'K@RBUNk!3'
+DEBUG: Received Header Key: 'None'
+DEBUG: Server Password: 'K@RBUNk!3'
+DEBUG: Received Query Key: 'K@RBUNk!3'
+DEBUG: Received Header Key: 'None'

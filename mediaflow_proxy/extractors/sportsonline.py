@@ -29,6 +29,10 @@ class SportsonlineExtractor(BaseExtractor):
         super().__init__(request_headers)
         self.mediaflow_endpoint = "hls_manifest_proxy"
 
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        return "sportsonline" in url or "sportzonline" in url
+
     def _detect_packed_blocks(self, html: str) -> list[str]:
         """
         Detect and extract packed eval blocks from HTML.

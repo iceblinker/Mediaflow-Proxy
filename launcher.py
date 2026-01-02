@@ -40,15 +40,24 @@ def run():
     else:
         print("⚠️ HTTPS certs not found, running on plain HTTP")
 
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8888,
-        reload=not is_frozen,
-        workers=1,
-        log_level="info",
-        **ssl_args
-    )
+    if not is_frozen:
+        uvicorn.run(
+            "mediaflow_proxy.main:app",
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", 8888)),
+            reload=True,
+            log_level="info",
+            **ssl_args
+        )
+    else:
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", 8888)),
+            workers=1,
+            log_level="info",
+            **ssl_args
+        )
 
 if __name__ == "__main__":
     run()

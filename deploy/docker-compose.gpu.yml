@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  mediaflow-proxy:
+    image: mediaflow-proxy:god-mode
+    container_name: mediaflow-proxy
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - API_PASSWORD=${API_PASSWORD:-mediaflow}
+      - WORKERS=${WORKERS:-5}
+      - ENABLE_HLS_PREBUFFER=true
+      - HLS_PREBUFFER_SEGMENTS=8
+    networks:
+      - media-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mediaflow-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboard.json:/var/lib/grafana/dashboards/mediaflow.json
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel
+    networks:
+      - media-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mediaflow-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - media-net
+
+networks:
+  media-net:
+    driver: bridge

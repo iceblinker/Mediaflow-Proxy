@@ -6,6 +6,12 @@
 
 MediaFlow Proxy is a powerful and flexible solution for proxifying various types of media streams. It supports HTTP(S) links, HLS (M3U8) streams, and MPEG-DASH streams, including DRM-protected content. This proxy can convert MPEG-DASH DRM-protected streams to decrypted HLS live streams in real-time, making it one of the fastest live decrypter servers available.
 
+[![CI](https://github.com/mhdzumair/mediaflow-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/mhdzumair/mediaflow-proxy/actions/workflows/ci.yml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/mhdzumair/mediaflow-proxy)](https://hub.docker.com/r/mhdzumair/mediaflow-proxy)
+[![Python Version](https://img.shields.io/pypi/pyversions/mediaflow-proxy)](https://pypi.org/project/mediaflow-proxy/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+
 ## Features
 
 ### Stream Processing
@@ -38,6 +44,9 @@ MediaFlow Proxy is a powerful and flexible solution for proxifying various types
 - Real-time HLS manifest manipulation
 - HLS Key URL modifications for bypassing stream restrictions
 - **Base64 URL Support** - Automatic detection and processing of base64 encoded URLs
+- **Observability Stack**: Built-in integration with Prometheus and Grafana for real-time monitoring.
+- **Resiliency**: Circuit Breakers for external extractors to prevent cascading failures.
+- **Advanced Rate Limiting**: Redis-backed distributed rate limiting with robust in-memory fallback.
 
 
 ## Configuration
@@ -603,7 +612,24 @@ MediaFlow Proxy now includes a built-in speed test feature for testing RealDebri
    - Test download speeds from AllDebrid servers
 
 
-## Installation
+## Installation & Deployment
+
+### 🚀 Production Deployment ("God Mode")
+
+For a production-ready setup with full observability (Grafana/Prometheus), Redis caching, and auto-healing:
+
+1.  **Navigate to the deploy directory**:
+    ```bash
+    cd deploy
+    ```
+2.  **Run the VPS stack**:
+    ```bash
+    # Ensure you have 'ai_network' created if using global Caddy (docker network create ai_network)
+    docker-compose -f docker-compose.vps.yml up -d
+    ```
+    *See `deploy/README.md` (if available) or `walkthrough.md` in the repo root for detailed VPS instructions.*
+
+### Standard Installation
 
 ### Option 1: Self-Hosted Deployment
 

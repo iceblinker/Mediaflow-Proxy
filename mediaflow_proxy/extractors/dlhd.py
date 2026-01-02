@@ -35,26 +35,30 @@ class DLHDExtractor(BaseExtractor):
         self.mediaflow_endpoint = "hls_manifest_proxy"
         self._iframe_context: Optional[str] = None
 
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        """Check if this extractor handles the given URL."""
+        return "dlhd.dad" in url or "daddylive.sx" in url or "daddy" in url
+
 
 
     async def _make_request(self, url: str, method: str = "GET", headers: Optional[Dict] = None, **kwargs) -> Any:
-        """Override to disable SSL verification for this extractor and use fetch_with_retry if available."""
-        from mediaflow_proxy.utils.http_utils import create_httpx_client, fetch_with_retry
-
-
+        """Override to disable SSL verification for this extractor."""
+        
         timeout = kwargs.pop("timeout", 15)
-        retries = kwargs.pop("retries", 3)
-        backoff_factor = kwargs.pop("backoff_factor", 0.5)
-
-
-        async with create_httpx_client(verify=False, timeout=httpx.Timeout(timeout)) as client:
-            try:
-                return await fetch_with_retry(client, method, url, headers or {}, timeout=timeout)
-            except Exception:
-                logger.debug("fetch_with_retry failed or unavailable; falling back to direct request for %s", url)
-                response = await client.request(method, url, headers=headers or {}, timeout=timeout)
-                response.raise_for_status()
-                return response
+        # retries/backoff unused if we handle it here or rely on simple loop? 
+        # BaseExtractor._make_request uses a loop.
+        # Here we just want a client with verify=False.
+        
+        # We can reuse the BaseExtractor's logic if we could inject the client?
+        # But BaseExtractor creates the client inside the loop.
+        
+        # So we reimplement simple retry/request with insecure client.
+        
+        async with httpx.AsyncClient(verify=False, timeout=httpx.Timeout(timeout)) as client:
+            response = await client.request(method, url, headers=headers or {}, timeout=timeout)
+            response.raise_for_status()
+            return response
 
 
     async def _extract_lovecdn_stream(self, iframe_url: str, iframe_content: str, headers: dict) -> Dict[str, Any]:
@@ -176,9 +180,8 @@ class DLHDExtractor(BaseExtractor):
             'Priority': 'u=1, i',
         })
         
-        from mediaflow_proxy.utils.http_utils import create_httpx_client
         try:
-            async with create_httpx_client(verify=False) as client:
+            async with httpx.AsyncClient(verify=False) as client:
                 # Note: using 'files' instead of 'data' to ensure multipart/form-data Content-Type
                 auth_resp = await client.post(auth_url, files=multipart_data, headers=auth_headers, timeout=12)
                 auth_resp.raise_for_status()

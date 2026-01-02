@@ -83,6 +83,8 @@ class HLSManifestParams(GenericParams):
         False,
         description="If true, redirects to the highest resolution stream in the manifest.",
     )
+    quality: Optional[int] = Field(None, description="The target vertical resolution (e.g. 720, 1080) to filter variants.")
+    language: Optional[str] = Field(None, description="The language code to filter variants.")
 
 
 class MPDManifestParams(GenericParams):

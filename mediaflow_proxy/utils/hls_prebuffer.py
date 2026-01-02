@@ -4,7 +4,7 @@ import psutil
 from typing import Dict, Optional, List
 from urllib.parse import urlparse
 import httpx
-from mediaflow_proxy.utils.http_utils import create_httpx_client
+from mediaflow_proxy.utils.http_utils import get_httpx_client
 from mediaflow_proxy.configs import settings
 from collections import OrderedDict
 import time
@@ -41,7 +41,7 @@ class HLSPreBuffer:
         self.segment_to_playlist: Dict[str, tuple[str, int]] = {}
         # Stato per playlist: {headers, last_access, refresh_task, target_duration}
         self.playlist_state: Dict[str, dict] = {}
-        self.client = create_httpx_client()
+        self.client = get_httpx_client()
         
     async def prebuffer_playlist(self, playlist_url: str, headers: Dict[str, str]) -> None:
         """
@@ -345,7 +345,8 @@ class HLSPreBuffer:
     
     async def close(self) -> None:
         """Close the pre-buffer system."""
-        await self.client.aclose()
+        # Do not close the shared client
+        pass
 
 
 # Global pre-buffer instance
