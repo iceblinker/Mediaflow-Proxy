@@ -39,7 +39,6 @@ class DownloadError(Exception):
         super().__init__(message)
 
 
-
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -101,7 +100,6 @@ class Streamer:
         Args:
             session: The aiohttp ClientSession to use for streaming.
             proxy_url: Optional proxy URL for HTTP proxies.
->>>>>>> upstream/main
         """
         self.session = session
         self.proxy_url = proxy_url
@@ -124,7 +122,6 @@ class Streamer:
         Args:
             url: The URL to stream from.
             headers: The headers to include in the request.
->>>>>>> upstream/main
         """
         try:
             self.response = await self.session.get(url, headers=headers, proxy=self.proxy_url)
@@ -188,13 +185,11 @@ class Streamer:
                     mininterval=1,
                 ) as self.progress_bar:
                     async for chunk in chunk_source:
->>>>>>> upstream/main
                         yield chunk
                         self.bytes_transferred += len(chunk)
                         self.progress_bar.update(len(chunk))
             else:
                 async for chunk in chunk_source:
->>>>>>> upstream/main
                     yield chunk
                     self.bytes_transferred += len(chunk)
 
@@ -233,7 +228,6 @@ class Streamer:
             else:
                 raise DownloadError(502, f"ClientError while streaming: {e}")
 
->>>>>>> upstream/main
     @staticmethod
     def format_bytes(size) -> str:
         power = 2**10
@@ -264,7 +258,6 @@ class Streamer:
 
         Returns:
             str: The response text.
->>>>>>> upstream/main
         """
         try:
             self.response = await fetch_with_retry(self.session, "GET", url, headers, proxy=self.proxy_url)
@@ -275,14 +268,12 @@ class Streamer:
     async def close(self):
         """
         Closes the HTTP response and session.
->>>>>>> upstream/main
         """
         if self.response:
             self.response.close()
         if self.progress_bar:
             self.progress_bar.close()
         await self.session.close()
->>>>>>> upstream/main
 
 
 async def download_file_with_retry(url: str, headers: dict) -> bytes:
@@ -308,7 +299,6 @@ async def download_file_with_retry(url: str, headers: dict) -> bytes:
             raise e
         except tenacity.RetryError as e:
             raise DownloadError(502, f"Failed to download file: {e.last_attempt.result()}")
->>>>>>> upstream/main
 
 
 async def request_with_retry(method: str, url: str, headers: dict, **kwargs) -> ClientResponse:
@@ -336,7 +326,6 @@ async def request_with_retry(method: str, url: str, headers: dict, **kwargs) -> 
         except DownloadError as e:
             logger.error(f"Failed to make request: {e}")
             raise
->>>>>>> upstream/main
 
 
 async def create_streamer(url: str = None) -> Streamer:
