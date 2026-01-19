@@ -1,5 +1,5 @@
 # Stage 1: Build stage with all compilation dependencies
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # Set work directory
 WORKDIR /build
@@ -28,10 +28,12 @@ COPY pyproject.toml uv.lock* /build/
 RUN uv sync --frozen --no-install-project --no-dev
 
 # Stage 2: Runtime stage (minimal image)
-FROM python:3.12-slim
+FROM python:3.14-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE="1"
+ENV PYTHONUNBUFFERED="1"
+ENV PORT="8888"
 
 # Install only runtime dependencies (no dev packages)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -48,6 +50,9 @@ WORKDIR /mediaflow_proxy
 
 # Copy virtual environment from builder stage
 COPY --from=builder /build/.venv /mediaflow_proxy/.venv
+
+# Copy project files
+COPY --chown=mediaflow_proxy:mediaflow_proxy . /mediaflow_proxy
 
 # Set ownership
 RUN chown -R mediaflow_proxy:mediaflow_proxy /mediaflow_proxy

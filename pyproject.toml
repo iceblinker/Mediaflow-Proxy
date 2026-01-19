@@ -1,6 +1,6 @@
 [project]
 name = "mediaflow-proxy"
-version = "2.3.5"
+version = "2.1.9"
 description = "A high-performance proxy server for streaming media, supporting HTTP(S), HLS, and MPEG-DASH with real-time DRM decryption."
 authors = [{ name = "mhdzumair", email = "mhdzumair@gmail.com" }]
 readme = "README.md"
@@ -33,10 +33,6 @@ dependencies = [
     "beautifulsoup4",
     "lxml",
     "psutil",
-    "cachetools>=5.3.3",
-    "prometheus-fastapi-instrumentator>=7.1.0",
-    "python-json-logger>=2.0.7",
-    "redis>=5.0.3",
 ]
 
 [project.urls]
@@ -50,8 +46,6 @@ mediaflow-proxy = "mediaflow_proxy.main:run"
 [dependency-groups]
 dev = [
     "ruff>=0.14.11",
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
 ]
 
 [build-system]
