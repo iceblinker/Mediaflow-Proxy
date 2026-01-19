@@ -13,10 +13,11 @@ services:
     ports:
       - "8888:8888"
     environment:
-      - API_PASSWORD=${API_PASSWORD:-mediaflow}
+      # - API_PASSWORD=${API_PASSWORD:-mediaflow}
       - WORKERS=${WORKERS:-5}
       - ENABLE_HLS_PREBUFFER=true
       - HLS_PREBUFFER_SEGMENTS=8
+      - STREAM_CHUNK_SIZE=4194304
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis

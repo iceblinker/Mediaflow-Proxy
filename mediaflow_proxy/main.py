@@ -79,15 +79,15 @@ app.include_router(speedtest_router, prefix="/speedtest", tags=["speedtest"], de
 app.include_router(playlist_builder_router, prefix="/playlist", tags=["playlist"])
 
 # Static Files
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, HTMLResponse
 
 # Static Files
 static_path = resources.files("mediaflow_proxy").joinpath("static")
 app.mount("/static", StaticFiles(directory=str(static_path), html=True), name="static")
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return RedirectResponse(url="/static/index.html")
+    return '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=/static/index.html" /></head><body>Redirecting to <a href="/static/index.html">UI</a>...</body></html>'
 
 
 def run():

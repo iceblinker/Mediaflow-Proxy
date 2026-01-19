@@ -40,7 +40,7 @@ def setup_logging():
     # Set levels for third-party libraries to avoid noise
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("uvicorn").setLevel(logging.INFO)
-    logging.getLogger("uvicorn.access").disabled = True # Disable default access log to avoid duplication if we log requests manually, or just let it be json.
+    # logging.getLogger("uvicorn.access").disabled = True # Disable default access log to avoid duplication if we log requests manually, or just let it be json.
     
     # Re-enable uvicorn access but set to parent logger
     # Actually, uvicorn configures its own loggers. We might want to override them.

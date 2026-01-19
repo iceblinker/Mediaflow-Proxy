@@ -457,6 +457,22 @@ async def dash_segment_proxy(
     return await handle_stream_request("GET", segment_url, proxy_headers)
 
 
+async def _check_and_extract_dlhd_stream(request: Request, destination: str, proxy_headers: ProxyRequestHeaders):
+    """
+    Helper to check if destination is DLHD and extract if so.
+    """
+    from mediaflow_proxy.extractors.dlhd import DLHDExtractor
+    
+    if DLHDExtractor.can_handle(destination):
+        try:
+            extractor = DLHDExtractor(proxy_headers.request)
+            return await extractor.extract(destination)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"DLHD extraction failed: {e}")
+            return None
+    return None
+
+
 @proxy_router.head("/stream")
 @proxy_router.get("/stream")
 @proxy_router.head("/stream/{filename:path}")

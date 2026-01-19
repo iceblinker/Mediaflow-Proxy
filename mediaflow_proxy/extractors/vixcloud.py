@@ -15,6 +15,11 @@ class VixCloudExtractor(BaseExtractor):
         super().__init__(*args, **kwargs)
         self.mediaflow_endpoint = "hls_manifest_proxy"
 
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        """Check if this extractor can handle the given URL."""
+        return "vix" in url or "vixcloud" in url
+
     async def version(self, site_url: str) -> str:
         """Get version of VixCloud Parent Site."""
         base_url = f"{site_url}/request-a-title"
