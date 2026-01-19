@@ -72,7 +72,6 @@ async def fetch_with_retry(
     """
     try:
         response = await session.request(method, url, headers=headers, proxy=proxy, **kwargs)
->>>>>>> upstream/main
         response.raise_for_status()
         return response
     except asyncio.TimeoutError:
