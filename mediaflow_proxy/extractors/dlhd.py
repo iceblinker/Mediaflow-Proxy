@@ -1,4 +1,5 @@
 import re
+<<<<<<< HEAD
 import base64
 import logging
 
@@ -10,12 +11,27 @@ import httpx
 
 
 from mediaflow_proxy.extractors.base import BaseExtractor, ExtractorError
+=======
+import logging
+
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
+
+import aiohttp
+
+from mediaflow_proxy.extractors.base import BaseExtractor, ExtractorError, HttpResponse
+from mediaflow_proxy.utils.http_client import create_aiohttp_session
+>>>>>>> upstream/main
 
 
 logger = logging.getLogger(__name__)
 
 # Silenzia l'errore ConnectionResetError su Windows
+<<<<<<< HEAD
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
+=======
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+>>>>>>> upstream/main
 
 
 class DLHDExtractor(BaseExtractor):
@@ -29,12 +45,16 @@ class DLHDExtractor(BaseExtractor):
     - Multi-iframe fallback for resilience
     """
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> upstream/main
     def __init__(self, request_headers: dict):
         super().__init__(request_headers)
         self.mediaflow_endpoint = "hls_manifest_proxy"
         self._iframe_context: Optional[str] = None
 
+<<<<<<< HEAD
     @classmethod
     def can_handle(cls, url: str) -> bool:
         """Check if this extractor handles the given URL."""
@@ -60,6 +80,39 @@ class DLHDExtractor(BaseExtractor):
             response.raise_for_status()
             return response
 
+=======
+    async def _make_request(
+        self, url: str, method: str = "GET", headers: Optional[Dict] = None, **kwargs
+    ) -> HttpResponse:
+        """Override to disable SSL verification for this extractor."""
+        timeout = kwargs.pop("timeout", 15)
+        kwargs.pop("retries", 3)  # consumed but not used directly
+        kwargs.pop("backoff_factor", 0.5)  # consumed but not used directly
+
+        # Merge headers
+        request_headers = self.base_headers.copy()
+        if headers:
+            request_headers.update(headers)
+
+        # Use create_aiohttp_session with verify=False for SSL bypass
+        async with create_aiohttp_session(url, timeout=timeout, verify=False) as (session, proxy_url):
+            async with session.request(method, url, headers=request_headers, proxy=proxy_url, **kwargs) as response:
+                content = await response.read()
+                final_url = str(response.url)
+                status = response.status
+                resp_headers = dict(response.headers)
+
+                if status >= 400:
+                    raise ExtractorError(f"HTTP error {status} while requesting {url}")
+
+                return HttpResponse(
+                    status=status,
+                    headers=resp_headers,
+                    text=content.decode("utf-8", errors="replace"),
+                    content=content,
+                    url=final_url,
+                )
+>>>>>>> upstream/main
 
     async def _extract_lovecdn_stream(self, iframe_url: str, iframe_content: str, headers: dict) -> Dict[str, Any]:
         """
@@ -73,22 +126,35 @@ class DLHDExtractor(BaseExtractor):
                 r'file[:\s]+["\']([^"\']+\.m3u8[^"\']*)["\']',
                 r'hlsManifestUrl[:\s]*["\']([^"\']+)["\']',
             ]
+<<<<<<< HEAD
             
+=======
+
+>>>>>>> upstream/main
             stream_url = None
             for pattern in m3u8_patterns:
                 matches = re.findall(pattern, iframe_content)
                 for match in matches:
+<<<<<<< HEAD
                     if '.m3u8' in match and match.startswith('http'):
+=======
+                    if ".m3u8" in match and match.startswith("http"):
+>>>>>>> upstream/main
                         stream_url = match
                         logger.info(f"Found direct m3u8 URL: {stream_url}")
                         break
                 if stream_url:
                     break
+<<<<<<< HEAD
             
+=======
+
+>>>>>>> upstream/main
             # Pattern 2: Cerca costruzione dinamica URL
             if not stream_url:
                 channel_match = re.search(r'(?:stream|channel)["\s:=]+["\']([^"\']+)["\']', iframe_content)
                 server_match = re.search(r'(?:server|domain|host)["\s:=]+["\']([^"\']+)["\']', iframe_content)
+<<<<<<< HEAD
                 
                 if channel_match:
                     channel_name = channel_match.group(1)
@@ -96,6 +162,15 @@ class DLHDExtractor(BaseExtractor):
                     stream_url = f"https://{server}/{channel_name}/mono.m3u8"
                     logger.info(f"Constructed stream URL: {stream_url}")
             
+=======
+
+                if channel_match:
+                    channel_name = channel_match.group(1)
+                    server = server_match.group(1) if server_match else "newkso.ru"
+                    stream_url = f"https://{server}/{channel_name}/mono.m3u8"
+                    logger.info(f"Constructed stream URL: {stream_url}")
+
+>>>>>>> upstream/main
             if not stream_url:
                 # Fallback: cerca qualsiasi URL che sembri uno stream
                 url_pattern = r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*'
@@ -103,6 +178,7 @@ class DLHDExtractor(BaseExtractor):
                 if matches:
                     stream_url = matches[0]
                     logger.info(f"Found fallback stream URL: {stream_url}")
+<<<<<<< HEAD
             
             if not stream_url:
                 raise ExtractorError(f"Could not find stream URL in lovecdn.ru iframe")
@@ -115,23 +191,45 @@ class DLHDExtractor(BaseExtractor):
                 'Origin': iframe_origin
             }
             
+=======
+
+            if not stream_url:
+                raise ExtractorError("Could not find stream URL in lovecdn.ru iframe")
+
+            # Usa iframe URL come referer
+            iframe_origin = f"https://{urlparse(iframe_url).netloc}"
+            stream_headers = {"User-Agent": headers["User-Agent"], "Referer": iframe_url, "Origin": iframe_origin}
+
+>>>>>>> upstream/main
             # Determina endpoint in base al dominio dello stream
             endpoint = "hls_key_proxy"
 
             logger.info(f"Using lovecdn.ru stream with endpoint: {endpoint}")
+<<<<<<< HEAD
             
+=======
+
+>>>>>>> upstream/main
             return {
                 "destination_url": stream_url,
                 "request_headers": stream_headers,
                 "mediaflow_endpoint": endpoint,
             }
+<<<<<<< HEAD
             
+=======
+
+>>>>>>> upstream/main
         except Exception as e:
             raise ExtractorError(f"Failed to extract lovecdn.ru stream: {e}")
 
     async def _extract_new_auth_flow(self, iframe_url: str, iframe_content: str, headers: dict) -> Dict[str, Any]:
         """Handles the new authentication flow found in recent updates."""
+<<<<<<< HEAD
         
+=======
+
+>>>>>>> upstream/main
         def _extract_params(js: str) -> Dict[str, Optional[str]]:
             params = {}
             patterns = {
@@ -147,13 +245,18 @@ class DLHDExtractor(BaseExtractor):
             return params
 
         params = _extract_params(iframe_content)
+<<<<<<< HEAD
         
+=======
+
+>>>>>>> upstream/main
         missing_params = [k for k, v in params.items() if not v]
         if missing_params:
             # This is not an error, just means it's not the new flow
             raise ExtractorError(f"Not the new auth flow: missing params {missing_params}")
 
         logger.info("New auth flow detected. Proceeding with POST auth.")
+<<<<<<< HEAD
         
         # 1. Initial Auth POST
         auth_url = 'https://security.newkso.ru/auth2.php'
@@ -189,12 +292,60 @@ class DLHDExtractor(BaseExtractor):
                 if not (auth_data.get("valid") or auth_data.get("success")):
                     raise ExtractorError(f"Initial auth failed with response: {auth_data}")
             logger.info("New auth flow: Initial auth successful.")
+=======
+
+        # 1. Initial Auth POST
+        auth_url = "https://security.newkso.ru/auth2.php"
+
+        iframe_origin = f"https://{urlparse(iframe_url).netloc}"
+        auth_headers = headers.copy()
+        auth_headers.update(
+            {
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Origin": iframe_origin,
+                "Referer": iframe_url,
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "Priority": "u=1, i",
+            }
+        )
+
+        # Build form data for multipart/form-data
+        form_data = aiohttp.FormData()
+        form_data.add_field("channelKey", params["channel_key"])
+        form_data.add_field("country", params["auth_country"])
+        form_data.add_field("timestamp", params["auth_ts"])
+        form_data.add_field("expiry", params["auth_expiry"])
+        form_data.add_field("token", params["auth_token"])
+
+        try:
+            async with create_aiohttp_session(auth_url, timeout=12, verify=False) as (session, proxy_url):
+                async with session.post(
+                    auth_url,
+                    headers=auth_headers,
+                    data=form_data,
+                    proxy=proxy_url,
+                ) as response:
+                    content = await response.read()
+                    response.raise_for_status()
+                    import json
+
+                    auth_data = json.loads(content.decode("utf-8"))
+                    if not (auth_data.get("valid") or auth_data.get("success")):
+                        raise ExtractorError(f"Initial auth failed with response: {auth_data}")
+            logger.info("New auth flow: Initial auth successful.")
+        except ExtractorError:
+            raise
+>>>>>>> upstream/main
         except Exception as e:
             raise ExtractorError(f"New auth flow failed during initial auth POST: {e}")
 
         # 2. Server Lookup
         server_lookup_url = f"https://{urlparse(iframe_url).netloc}/server_lookup.js?channel_id={params['channel_key']}"
         try:
+<<<<<<< HEAD
             # Use _make_request as it handles retries and expects JSON
             lookup_resp = await self._make_request(server_lookup_url, headers=headers, timeout=10)
             server_data = lookup_resp.json()
@@ -202,10 +353,22 @@ class DLHDExtractor(BaseExtractor):
             if not server_key:
                 raise ExtractorError(f"No server_key in lookup response: {server_data}")
             logger.info(f"New auth flow: Server lookup successful - Server key: {server_key}")
+=======
+            # Use _make_request as it handles retries
+            lookup_resp = await self._make_request(server_lookup_url, headers=headers, timeout=10)
+            server_data = lookup_resp.json()
+            server_key = server_data.get("server_key")
+            if not server_key:
+                raise ExtractorError(f"No server_key in lookup response: {server_data}")
+            logger.info(f"New auth flow: Server lookup successful - Server key: {server_key}")
+        except ExtractorError:
+            raise
+>>>>>>> upstream/main
         except Exception as e:
             raise ExtractorError(f"New auth flow failed during server lookup: {e}")
 
         # 3. Build final stream URL
+<<<<<<< HEAD
         channel_key = params['channel_key']
         auth_token = params['auth_token']
         # The JS logic uses .css, not .m3u8
@@ -222,6 +385,24 @@ class DLHDExtractor(BaseExtractor):
             'Origin': iframe_origin,
             'Authorization': f'Bearer {auth_token}',
             'X-Channel-Key': channel_key
+=======
+        channel_key = params["channel_key"]
+        auth_token = params["auth_token"]
+        # The JS logic uses .css, not .m3u8
+        if server_key == "top1/cdn":
+            stream_url = f"https://top1.newkso.ru/top1/cdn/{channel_key}/mono.css"
+        else:
+            stream_url = f"https://{server_key}new.newkso.ru/{server_key}/{channel_key}/mono.css"
+
+        logger.info(f"New auth flow: Constructed stream URL: {stream_url}")
+
+        stream_headers = {
+            "User-Agent": headers["User-Agent"],
+            "Referer": iframe_url,
+            "Origin": iframe_origin,
+            "Authorization": f"Bearer {auth_token}",
+            "X-Channel-Key": channel_key,
+>>>>>>> upstream/main
         }
 
         return {
@@ -235,11 +416,16 @@ class DLHDExtractor(BaseExtractor):
         baseurl = "https://dlhd.dad/"
 
         def extract_channel_id(u: str) -> Optional[str]:
+<<<<<<< HEAD
             match_watch_id = re.search(r'watch\.php\?id=(\d+)', u)
+=======
+            match_watch_id = re.search(r"watch\.php\?id=(\d+)", u)
+>>>>>>> upstream/main
             if match_watch_id:
                 return match_watch_id.group(1)
             return None
 
+<<<<<<< HEAD
 
         async def get_stream_data(initial_url: str):
             daddy_origin = urlparse(baseurl).scheme + "://" + urlparse(baseurl).netloc
@@ -257,12 +443,30 @@ class DLHDExtractor(BaseExtractor):
                 raise ExtractorError("No player links found on the page.")
 
 
+=======
+        async def get_stream_data(initial_url: str):
+            daddy_origin = urlparse(baseurl).scheme + "://" + urlparse(baseurl).netloc
+            daddylive_headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                "Referer": baseurl,
+                "Origin": daddy_origin,
+            }
+
+            # 1. Request initial page
+            resp1 = await self._make_request(initial_url, headers=daddylive_headers, timeout=15)
+            resp1_text = resp1.text
+            player_links = re.findall(r'<button[^>]*data-url="([^"]+)"[^>]*>Player\s*\d+</button>', resp1_text)
+            if not player_links:
+                raise ExtractorError("No player links found on the page.")
+
+>>>>>>> upstream/main
             # Prova tutti i player e raccogli tutti gli iframe validi
             last_player_error = None
             iframe_candidates = []
 
             for player_url in player_links:
                 try:
+<<<<<<< HEAD
                     if not player_url.startswith('http'):
                         player_url = baseurl + player_url.lstrip('/')
 
@@ -271,6 +475,16 @@ class DLHDExtractor(BaseExtractor):
                     daddylive_headers['Origin'] = player_url
                     resp2 = await self._make_request(player_url, headers=daddylive_headers, timeout=12)
                     iframes2 = re.findall(r'<iframe.*?src="([^"]*)"', resp2.text)
+=======
+                    if not player_url.startswith("http"):
+                        player_url = baseurl + player_url.lstrip("/")
+
+                    daddylive_headers["Referer"] = player_url
+                    daddylive_headers["Origin"] = player_url
+                    resp2 = await self._make_request(player_url, headers=daddylive_headers, timeout=12)
+                    resp2_text = resp2.text
+                    iframes2 = re.findall(r'<iframe.*?src="([^"]*)"', resp2_text)
+>>>>>>> upstream/main
 
                     # Raccogli tutti gli iframe trovati
                     for iframe in iframes2:
@@ -283,13 +497,19 @@ class DLHDExtractor(BaseExtractor):
                     logger.warning(f"Failed to process player link {player_url}: {e}")
                     continue
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> upstream/main
             if not iframe_candidates:
                 if last_player_error:
                     raise ExtractorError(f"All player links failed. Last error: {last_player_error}")
                 raise ExtractorError("No valid iframe found in any player page")
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> upstream/main
             # Prova ogni iframe finché uno non funziona
             last_iframe_error = None
 
@@ -307,7 +527,11 @@ class DLHDExtractor(BaseExtractor):
                     iframe_content = resp3.text
                     logger.info(f"Successfully loaded iframe from: {iframe_domain}")
 
+<<<<<<< HEAD
                     if 'lovecdn.ru' in iframe_domain:
+=======
+                    if "lovecdn.ru" in iframe_domain:
+>>>>>>> upstream/main
                         logger.info("Detected lovecdn.ru iframe - using alternative extraction")
                         return await self._extract_lovecdn_stream(iframe_candidate, iframe_content, daddylive_headers)
                     else:
@@ -321,7 +545,10 @@ class DLHDExtractor(BaseExtractor):
 
             raise ExtractorError(f"All iframe candidates failed. Last error: {last_iframe_error}")
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> upstream/main
         try:
             channel_id = extract_channel_id(url)
             if not channel_id:
@@ -330,6 +557,9 @@ class DLHDExtractor(BaseExtractor):
             logger.info(f"Using base domain: {baseurl}")
             return await get_stream_data(url)
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> upstream/main
         except Exception as e:
             raise ExtractorError(f"Extraction failed: {str(e)}")

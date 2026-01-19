@@ -1,51 +1,65 @@
-# Stage 1: Builder
-FROM python:3.13.5-slim as builder
+# Stage 1: Build stage with all compilation dependencies
+FROM python:3.12-slim AS builder
+
+# Set work directory
+WORKDIR /build
+
+# Install build dependencies required for compiling packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    libxml2-dev \
+    libxslt-dev \
+    zlib1g-dev \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add Rust to PATH
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Copy only requirements to cache them in docker layer
+COPY pyproject.toml uv.lock* /build/
+
+# Install dependencies into a virtual environment
+RUN uv sync --frozen --no-install-project --no-dev
+
+# Stage 2: Runtime stage (minimal image)
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-WORKDIR /app
+# Install only runtime dependencies (no dev packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxml2 \
+    libxslt1.1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry
-RUN pip install --no-cache-dir poetry
+# Create a non-root user
+RUN useradd -m -u 1000 mediaflow_proxy
 
-# Copy dependency files
-COPY pyproject.toml poetry.lock* ./
+# Set work directory
+WORKDIR /mediaflow_proxy
 
-# Configure poetry to create venv in project
-RUN poetry config virtualenvs.in-project true
+# Copy virtual environment from builder stage
+COPY --from=builder /build/.venv /mediaflow_proxy/.venv
 
-# Ensure lock file is up to date
-RUN poetry lock
-
-# Install dependencies
-RUN poetry install --no-interaction --no-ansi --only main --no-root
-
-# Stage 2: Runtime
-FROM python:3.13.5-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PORT=8888 \
-    PATH="/app/.venv/bin:$PATH"
-
-WORKDIR /app
-
-# Create non-root user
-RUN useradd -m -u 1000 mediaflow
-
-# Copy virtual environment from builder
-COPY --from=builder /app/.venv /app/.venv
-
-# Copy application code
-COPY --chown=mediaflow:mediaflow . /app
+# Set ownership
+RUN chown -R mediaflow_proxy:mediaflow_proxy /mediaflow_proxy
 
 # Switch to non-root user
-USER mediaflow
+USER mediaflow_proxy
 
+# Set up the PATH to include the virtual environment
+ENV PATH="/mediaflow_proxy/.venv/bin:$PATH"
+
+# Expose the port the app runs on
 EXPOSE 8888
 
-# Run application
-# Note: FORWARDED_ALLOW_IPS default is set to * for ease of use behind proxies, 
-# can be overridden by env var.
-CMD gunicorn mediaflow_proxy.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120 --max-requests 500 --max-requests-jitter 200 --access-logfile - --error-logfile - --log-level info --forwarded-allow-ips '*'
+# Run the application with Gunicorn (use python -m to avoid venv path issues)
+CMD ["sh", "-c", "exec python -m gunicorn mediaflow_proxy.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8888 --timeout 120 --max-requests 500 --max-requests-jitter 200 --access-logfile - --error-logfile - --log-level info --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]
