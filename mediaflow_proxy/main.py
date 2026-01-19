@@ -265,7 +265,7 @@ async def check_base64_url(url: str):
     return result
 
 
-# app.include_router(diagnostics_router, prefix="/v1", tags=["diagnostics"])  # Disabled: requires httpx
+app.include_router(diagnostics_router, prefix="/v1", tags=["diagnostics"])
 app.include_router(ai_playlist_router, prefix="/v1/playlist", tags=["ai_playlist"])
 
 app.include_router(proxy_router, prefix="/proxy", tags=["proxy"])
