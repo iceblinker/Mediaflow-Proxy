@@ -9,10 +9,8 @@ import json
 import logging
 
 from mediaflow_proxy.configs import settings
-from mediaflow_proxy.configs import settings
 from mediaflow_proxy.utils.http_client import create_aiohttp_session
 from mediaflow_proxy.utils.http_utils import DownloadError
-from mediaflow_proxy.utils.circuit_breaker import get_circuit_breaker, get_domain_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -68,38 +66,6 @@ class BaseExtractor(ABC):
         self.base_headers.update(request_headers or {})
 
     async def _make_request(
-        self,
-        url: str,
-        method: str = "GET",
-        headers: Optional[Dict] = None,
-        timeout: Optional[float] = None,
-        retries: int = 3,
-        backoff_factor: float = 0.5,
-        raise_on_status: bool = True,
-        **kwargs,
-    ) -> HttpResponse:
-        """
-        Wrapper for _execute_request that applies Circuit Breaker pattern.
-        """
-        domain = get_domain_from_url(url)
-        cb = get_circuit_breaker(domain)
-
-        if not cb.allow_request():
-            raise ExtractorError(f"Circuit Breaker OPEN for {domain} (Too many failures)")
-
-        try:
-            response = await self._execute_request(
-                url, method, headers, timeout, retries, backoff_factor, raise_on_status, **kwargs
-            )
-            cb.record_success()
-            return response
-        except Exception:
-            # We record a failure for any exception that propagates out of the retry logic
-            # This includes exhausted retries, 5xx errors (if raise_on_status=True), etc.
-            cb.record_failure()
-            raise
-
-    async def _execute_request(
         self,
         url: str,
         method: str = "GET",
@@ -181,7 +147,6 @@ class BaseExtractor(ABC):
                             content=content,
                             url=final_url,
                         )
->>>>>>> upstream/main
 
             except DownloadError:
                 # Do not retry on explicit HTTP status errors (they are intentional)
@@ -213,13 +178,3 @@ class BaseExtractor(ABC):
     async def extract(self, url: str, **kwargs) -> Dict[str, Any]:
         """Extract final URL and required headers."""
         pass
-
-    @classmethod
-    @abstractmethod
-    def can_handle(cls, url: str) -> bool:
-        """Check if this extractor can handle the given URL."""
-        pass
-
-    @property
-    def name(self) -> str:
-        return self.__class__.__name__.replace("Extractor", "")

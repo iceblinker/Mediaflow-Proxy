@@ -1,6 +1,4 @@
 from typing import Dict, Type
-from typing import Dict, Type
-import cachetools.func
 
 from mediaflow_proxy.extractors.base import BaseExtractor, ExtractorError
 from mediaflow_proxy.extractors.dlhd import DLHDExtractor
@@ -61,22 +59,4 @@ class ExtractorFactory:
         extractor_class = cls._extractors.get(host)
         if not extractor_class:
             raise ExtractorError(f"Unsupported host: {host}")
-        return extractor_class(request_headers)
-
-    @classmethod
-    @cachetools.func.ttl_cache(maxsize=100, ttl=3600)
-    def _resolve_extractor_class(cls, url: str) -> Type[BaseExtractor]:
-        """Cacheable helper to resolve URL to extractor class."""
-        for extractor_class in cls._extractors.values():
-            try:
-                if extractor_class.can_handle(url):
-                    return extractor_class
-            except (NotImplementedError, AttributeError):
-                continue
-        raise ExtractorError(f"No extractor found for URL: {url}")
-
-    @classmethod
-    def get_extractor_by_url(cls, url: str, request_headers: dict) -> BaseExtractor:
-        """Get appropriate extractor instance checking each extractor's can_handle method."""
-        extractor_class = cls._resolve_extractor_class(url)
         return extractor_class(request_headers)
