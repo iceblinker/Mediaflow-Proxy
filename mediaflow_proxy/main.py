@@ -8,21 +8,6 @@ from starlette.staticfiles import StaticFiles
 
 from mediaflow_proxy.configs import settings
 from mediaflow_proxy.middleware import UIAccessControlMiddleware
-<<<<<<< HEAD
-from mediaflow_proxy.routes import proxy_router, extractor_router, speedtest_router, playlist_builder_router
-from mediaflow_proxy.routes.general import router as general_router
-from mediaflow_proxy.routes.url_tools import router as url_tools_router
-from mediaflow_proxy.utils.crypto_utils import EncryptionMiddleware
-from mediaflow_proxy.utils.logging_utils import setup_logging
-from mediaflow_proxy.utils.error_handler import register_exception_handlers
-from mediaflow_proxy.utils.security import verify_api_key
-
-from contextlib import asynccontextmanager
-from mediaflow_proxy.utils.http_client import HttpClientManager
-
-# Setup logging
-setup_logging()
-=======
 from mediaflow_proxy.routes import (
     proxy_router,
     extractor_router,
@@ -30,46 +15,24 @@ from mediaflow_proxy.routes import (
     playlist_builder_router,
     xtream_root_router,
 )
+from mediaflow_proxy.routes.general import router as general_router
+from mediaflow_proxy.routes.url_tools import router as url_tools_router
+from mediaflow_proxy.routes.diagnostics import router as diagnostics_router
+from mediaflow_proxy.routes.ai_playlist import router as ai_playlist_router
 from mediaflow_proxy.schemas import GenerateUrlRequest, GenerateMultiUrlRequest, MultiUrlRequestItem
 from mediaflow_proxy.utils.cache_utils import EXTRACTOR_CACHE
 from mediaflow_proxy.utils.crypto_utils import EncryptionHandler, EncryptionMiddleware
 from mediaflow_proxy.utils.http_utils import encode_mediaflow_proxy_url
 from mediaflow_proxy.utils.base64_utils import encode_url_to_base64, decode_base64_url, is_base64_url
+from mediaflow_proxy.utils.error_handler import register_exception_handlers
+from mediaflow_proxy.utils.security import verify_api_key
 
 logging.basicConfig(level=settings.log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
->>>>>>> upstream/main
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-<<<<<<< HEAD
-    # Startup
-    HttpClientManager.start()
-    logger.info("--- STARTUP: Registered Routes ---")
-    for route in app.routes:
-        logger.info(f"Route: {route.path} | Name: {route.name}")
-    logger.info("----------------------------------")
-    yield
-    # Shutdown
-    await HttpClientManager.stop()
-
-
-app = FastAPI(lifespan=lifespan)
-
-from prometheus_fastapi_instrumentator import Instrumentator
-
-Instrumentator().instrument(app).expose(app)
-
-from mediaflow_proxy.middleware.request_id import RequestIdMiddleware
-from mediaflow_proxy.middleware.security import SecurityHeadersMiddleware
-from mediaflow_proxy.middleware.rate_limiter import RateLimitMiddleware
-
-# Middleware
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RequestIdMiddleware)
-=======
     """Application lifespan handler for startup and shutdown events."""
     # Startup
     if settings.clear_cache_on_startup:
@@ -84,9 +47,13 @@ app.add_middleware(RequestIdMiddleware)
 
 
 app = FastAPI(lifespan=lifespan)
+from fastapi.security import APIKeyQuery, APIKeyHeader
+from fastapi import HTTPException
+import asyncio
+from starlette.responses import RedirectResponse
+
 api_password_query = APIKeyQuery(name="api_password", auto_error=False)
 api_password_header = APIKeyHeader(name="api_password", auto_error=False)
->>>>>>> upstream/main
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -103,25 +70,6 @@ register_exception_handlers(app)
 # Routers
 app.include_router(general_router)
 app.include_router(url_tools_router)
-
-<<<<<<< HEAD
-from mediaflow_proxy.routes.diagnostics import router as diagnostics_router
-from mediaflow_proxy.routes.ai_playlist import router as ai_playlist_router
-=======
-    Args:
-        api_key (str): The API key to validate.
-        api_key_alt (str): The alternative API key to validate.
-
-    Raises:
-        HTTPException: If the API key is invalid.
-    """
-    if not settings.api_password:
-        return
-
-    if api_key == settings.api_password or api_key_alt == settings.api_password:
-        return
-
-    raise HTTPException(status_code=403, detail="Could not validate credentials")
 
 
 @app.get("/health")
@@ -315,20 +263,19 @@ async def check_base64_url(url: str):
             result["decoded_url"] = decoded_url
 
     return result
->>>>>>> upstream/main
+
 
 app.include_router(diagnostics_router, prefix="/v1", tags=["diagnostics"])
 app.include_router(ai_playlist_router, prefix="/v1/playlist", tags=["ai_playlist"])
 
-app.include_router(proxy_router, prefix="/proxy", tags=["proxy"], dependencies=[Depends(verify_api_key)])
-app.include_router(extractor_router, prefix="/extractor", tags=["extractors"], dependencies=[Depends(verify_api_key)])
-app.include_router(speedtest_router, prefix="/speedtest", tags=["speedtest"], dependencies=[Depends(verify_api_key)])
+app.include_router(proxy_router, prefix="/proxy", tags=["proxy"])
+app.include_router(extractor_router, prefix="/extractor", tags=["extractors"])
+app.include_router(speedtest_router, prefix="/speedtest", tags=["speedtest"])
 app.include_router(playlist_builder_router, prefix="/playlist", tags=["playlist"])
-# Root-level XC endpoints for IPTV player compatibility (handles its own API key verification)
 app.include_router(xtream_root_router, tags=["xtream"])
 
 # Static Files
-from starlette.responses import RedirectResponse, HTMLResponse
+from starlette.responses import HTMLResponse
 
 # Static Files
 static_path = resources.files("mediaflow_proxy").joinpath("static")
