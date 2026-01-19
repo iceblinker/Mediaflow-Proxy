@@ -21,12 +21,8 @@ from .utils.http_utils import (
     request_with_retry,
     EnhancedStreamingResponse,
     ProxyRequestHeaders,
-<<<<<<< HEAD
-    get_httpx_client,
-=======
     create_streamer,
     apply_header_manipulation,
->>>>>>> upstream/main
 )
 from .utils.m3u8_processor import M3U8Processor
 from .utils.mpd_utils import pad_base64
@@ -36,20 +32,6 @@ from .configs import settings
 logger = logging.getLogger(__name__)
 
 
-<<<<<<< HEAD
-async def setup_client_and_streamer() -> tuple[httpx.AsyncClient, Streamer]:
-    """
-    Set up an HTTP client and a streamer.
-
-    Returns:
-        tuple: An httpx.AsyncClient instance and a Streamer instance.
-    """
-    client = get_httpx_client()
-    return client, Streamer(client)
-
-
-=======
->>>>>>> upstream/main
 def handle_exceptions(exception: Exception) -> Response:
     """
     Handle exceptions and return appropriate HTTP responses.
@@ -135,11 +117,6 @@ async def handle_hls_stream_proxy(
         # If force_playlist_proxy is enabled, skip detection and directly process as m3u8
         if hls_params.force_playlist_proxy:
             return await fetch_and_process_m3u8(
-<<<<<<< HEAD
-                streamer, hls_params.destination, proxy_headers, request, 
-                hls_params.key_url, hls_params.force_playlist_proxy, hls_params.key_only_proxy, hls_params.no_proxy,
-                hls_params.quality, hls_params.language
-=======
                 streamer,
                 hls_params.destination,
                 proxy_headers,
@@ -150,7 +127,6 @@ async def handle_hls_stream_proxy(
                 hls_params.no_proxy,
                 skip_segments_list,
                 transformer,
->>>>>>> upstream/main
             )
 
         parsed_url = urlparse(hls_params.destination)
@@ -159,11 +135,6 @@ async def handle_hls_stream_proxy(
             0
         ] in ["m3u", "m3u8", "m3u_plus"]:
             return await fetch_and_process_m3u8(
-<<<<<<< HEAD
-                streamer, hls_params.destination, proxy_headers, request, 
-                hls_params.key_url, hls_params.force_playlist_proxy, hls_params.key_only_proxy, hls_params.no_proxy,
-                hls_params.quality, hls_params.language
-=======
                 streamer,
                 hls_params.destination,
                 proxy_headers,
@@ -174,7 +145,6 @@ async def handle_hls_stream_proxy(
                 hls_params.no_proxy,
                 skip_segments_list,
                 transformer,
->>>>>>> upstream/main
             )
 
         # Create initial streaming response to check content type
@@ -185,11 +155,6 @@ async def handle_hls_stream_proxy(
 
         if "mpegurl" in response_headers.get("content-type", "").lower():
             return await fetch_and_process_m3u8(
-<<<<<<< HEAD
-                streamer, hls_params.destination, proxy_headers, request, 
-                hls_params.key_url, hls_params.force_playlist_proxy, hls_params.key_only_proxy, hls_params.no_proxy,
-                hls_params.quality, hls_params.language
-=======
                 streamer,
                 hls_params.destination,
                 proxy_headers,
@@ -200,7 +165,6 @@ async def handle_hls_stream_proxy(
                 hls_params.no_proxy,
                 skip_segments_list,
                 transformer,
->>>>>>> upstream/main
             )
 
         # If we're removing content-range but upstream returned 206, change to 200
@@ -358,13 +322,8 @@ async def fetch_and_process_m3u8(
     force_playlist_proxy: bool = None,
     key_only_proxy: bool = False,
     no_proxy: bool = False,
-<<<<<<< HEAD
-    quality: int = None,
-    language: str = None
-=======
     skip_segments: list = None,
     transformer: Optional[StreamTransformer] = None,
->>>>>>> upstream/main
 ):
     """
     Fetches and processes the m3u8 playlist on-the-fly, converting it to an HLS playlist.
@@ -378,14 +337,9 @@ async def fetch_and_process_m3u8(
         force_playlist_proxy (bool, optional): Force all playlist URLs to be proxied through MediaFlow. Defaults to None.
         key_only_proxy (bool, optional): Only proxy the key URL, leaving segment URLs direct. Defaults to False.
         no_proxy (bool, optional): If True, returns the manifest without proxying any URLs. Defaults to False.
-<<<<<<< HEAD
-        quality (int, optional): The target vertical resolution (e.g. 720, 1080) to filter variants.
-        language (str, optional): The language code to filter variants.
-=======
         skip_segments (list, optional): List of time segments to skip. Each item should have
                                         'start', 'end' (in seconds), and optionally 'type'.
         transformer (StreamTransformer, optional): Transformer to apply to the stream content.
->>>>>>> upstream/main
 
     Returns:
         Response: The HTTP response with the processed m3u8 playlist.
@@ -396,14 +350,9 @@ async def fetch_and_process_m3u8(
             await streamer.create_streaming_response(url, proxy_headers.request)
 
         # Initialize processor and response headers
-<<<<<<< HEAD
-        processor = M3U8Processor(request, key_url, force_playlist_proxy, key_only_proxy, no_proxy, quality, language)
-        response_headers = {
-=======
         # skip_segments is already a list of dicts with 'start' and 'end' keys
         processor = M3U8Processor(request, key_url, force_playlist_proxy, key_only_proxy, no_proxy, skip_segments)
         base_headers = {
->>>>>>> upstream/main
             "content-disposition": "inline",
             "accept-ranges": "none",
             "content-type": "application/vnd.apple.mpegurl",

@@ -156,10 +156,6 @@ class HLSManifestParams(GenericParams):
         False,
         description="If true, redirects to the highest resolution stream in the manifest.",
     )
-<<<<<<< HEAD
-    quality: Optional[int] = Field(None, description="The target vertical resolution (e.g. 720, 1080) to filter variants.")
-    language: Optional[str] = Field(None, description="The language code to filter variants.")
-=======
     resolution: Optional[str] = Field(
         None,
         description="Select a specific resolution stream (e.g., '1080p', '720p', '480p'). Falls back to closest lower resolution if exact match not found.",
@@ -185,7 +181,6 @@ class HLSManifestParams(GenericParams):
         if self.skip is None:
             return None
         return parse_skip_segments(self.skip)
->>>>>>> upstream/main
 
 
 class MPDManifestParams(GenericParams):

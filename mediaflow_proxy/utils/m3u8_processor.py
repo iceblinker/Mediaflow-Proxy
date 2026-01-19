@@ -77,8 +77,6 @@ class M3U8Processor:
         force_playlist_proxy: bool = None,
         key_only_proxy: bool = False,
         no_proxy: bool = False,
-        quality: int = None,
-        language: str = None,
         skip_segments: Optional[List[dict]] = None,
     ):
         """
@@ -90,21 +88,14 @@ class M3U8Processor:
             force_playlist_proxy (bool, optional): Force all playlist URLs to be proxied through MediaFlow. Defaults to None.
             key_only_proxy (bool, optional): Only proxy the key URL, leaving segment URLs direct. Defaults to False.
             no_proxy (bool, optional): If True, returns the manifest without proxying any URLs. Defaults to False.
-<<<<<<< HEAD
-            quality (int, optional): The target vertical resolution (e.g. 720, 1080) to filter variants.
-            language (str, optional): The language code to filter variants.
-=======
             skip_segments (List[dict], optional): List of time segments to skip. Each dict should have
                                                   'start', 'end' (in seconds), and optionally 'type'.
->>>>>>> upstream/main
         """
         self.request = request
         self.key_url = parse.urlparse(key_url) if key_url else None
         self.key_only_proxy = key_only_proxy
         self.no_proxy = no_proxy
         self.force_playlist_proxy = force_playlist_proxy
-        self.quality = quality
-        self.language = language
         self.skip_filter = SkipSegmentFilter(skip_segments)
         self.mediaflow_proxy_url = str(
             request.url_for("hls_manifest_proxy").replace(scheme=get_original_scheme(request))
@@ -115,40 +106,6 @@ class M3U8Processor:
             request.url_for("hls_manifest_proxy").replace(scheme=get_original_scheme(request))
         ).replace("/hls/manifest.m3u8", "/hls/segment")
         self.playlist_url = None  # Will be set when processing starts
-
-    def filter_playlist(self, content: str) -> str:
-        """
-        Filters the playlist based on quality and language preferences.
-        """
-        lines = content.splitlines()
-        new_lines = []
-        i = 0
-        
-        # Simple parser to find variants
-        variants = []
-        while i < len(lines):
-            line = lines[i]
-            if line.startswith("#EXT-X-STREAM-INF"):
-                # Accumulate the block (inf line + url)
-                inf_line = line
-                url_line = ""
-                if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
-                    url_line = lines[i + 1]
-                    i += 1
-                variants.append((inf_line, url_line))
-            elif line.startswith("#"):
-                 # Keep headers/global tags, but maybe we should be selective?
-                 # For now, keep them attached to 'global', effectively we will rebuild it.
-                 pass
-            i += 1
-            
-        if not variants:
-            return content
-
-        # Just rebuild using primitive line iteration essentially provided by process_m3u8 
-        # but skipping unwanted variants.
-        # Actually doing it inside process_m3u8 might be cleaner if we want to proxy *only* the kept ones.
-        return content
 
     async def process_m3u8(self, content: str, base_url: str) -> str:
         """
@@ -168,10 +125,6 @@ class M3U8Processor:
         """
         # Store the playlist URL for prebuffering
         self.playlist_url = base_url
-        
-        # Apply filtering if this is a master playlist and filters are set
-        if "#EXT-X-STREAM-INF" in content and (self.quality is not None or self.language):
-             content = self._apply_filtering(content)
 
         lines = content.splitlines()
         processed_lines = []
@@ -268,69 +221,6 @@ class M3U8Processor:
                     )
 
         return "\n".join(processed_lines)
-
-    def _apply_filtering(self, content: str) -> str:
-        """Helper to filter master playlist variants and media tags."""
-        lines = content.splitlines()
-        filtered_lines = []
-        i = 0
-        
-        while i < len(lines):
-            line = lines[i]
-            
-            # Filter Media Tags (Audio/Subtitles)
-            if line.startswith("#EXT-X-MEDIA"):
-                keep = True
-                if self.language:
-                    # Check if it has LANGUAGE attribute
-                    lang_match = re.search(r'LANGUAGE="([^"]+)"', line)
-                    if lang_match:
-                        lang = lang_match.group(1)
-                        # Simple case-insensitive substring match or exact code?
-                        # Let's start with exact match of code (e.g. "en", "eng") or prefix
-                        if not lang.lower().startswith(self.language.lower()):
-                            keep = False
-                    # If no language attr, maybe keep it (e.g. undefined)? 
-                    # Or drop? Let's keep it to be safe.
-                
-                if keep:
-                    filtered_lines.append(line)
-                i += 1
-                continue
-
-            # Filter Variants
-            if line.startswith("#EXT-X-STREAM-INF"):
-                inf_line = line
-                url_line = ""
-                jump = 1
-                if i + 1 < len(lines) and not lines[i+1].startswith("#"):
-                    url_line = lines[i+1]
-                    jump = 2
-                
-                # Check attributes
-                keep = True
-                
-                # Quality filter (RESOLUTION=WxH)
-                if self.quality:
-                    res_match = re.search(r'RESOLUTION=(\d+)x(\d+)', inf_line)
-                    if res_match:
-                        height = int(res_match.group(2))
-                        if height != self.quality:
-                            keep = False
-                
-                if keep:
-                     filtered_lines.append(inf_line)
-                     if url_line:
-                         filtered_lines.append(url_line)
-                
-                i += jump
-                continue
-
-            # Keep other lines (header, other tags)
-            filtered_lines.append(line)
-            i += 1
-            
-        return "\n".join(filtered_lines)
 
     def _parse_extinf_duration(self, line: str) -> float:
         """
