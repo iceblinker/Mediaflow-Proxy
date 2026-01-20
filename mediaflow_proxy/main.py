@@ -17,7 +17,7 @@ from mediaflow_proxy.routes import (
 )
 from mediaflow_proxy.routes.general import router as general_router
 from mediaflow_proxy.routes.url_tools import router as url_tools_router
-# from mediaflow_proxy.routes.diagnostics import router as diagnostics_router  # Disabled: requires httpx
+from mediaflow_proxy.routes.diagnostics import router as diagnostics_router
 from mediaflow_proxy.routes.ai_playlist import router as ai_playlist_router
 from mediaflow_proxy.schemas import GenerateUrlRequest, GenerateMultiUrlRequest, MultiUrlRequestItem
 from mediaflow_proxy.utils.cache_utils import EXTRACTOR_CACHE
