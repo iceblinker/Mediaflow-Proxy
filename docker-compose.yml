@@ -16,7 +16,7 @@ services:
       # Logic: Workers should be (2 * Cores) + 1. 
       # For a 2-core VPS, use 5. For 4-core, use 9.
       - WORKERS=5
-      - LOG_LEVEL=error
+      - LOG_LEVEL=ERROR
 
       # PREMIUM FEATURE: HLS/DASH Pre-buffering
       # Defaults are True in code, but explicit is good.
