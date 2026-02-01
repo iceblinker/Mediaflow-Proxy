@@ -14,6 +14,7 @@ from mediaflow_proxy.routes import (
     speedtest_router,
     playlist_builder_router,
     xtream_root_router,
+    acestream_router,
 )
 from mediaflow_proxy.routes.general import router as general_router
 from mediaflow_proxy.routes.url_tools import router as url_tools_router
@@ -26,6 +27,7 @@ from mediaflow_proxy.utils.http_utils import encode_mediaflow_proxy_url
 from mediaflow_proxy.utils.base64_utils import encode_url_to_base64, decode_base64_url, is_base64_url
 from mediaflow_proxy.utils.error_handler import register_exception_handlers
 from mediaflow_proxy.utils.security import verify_api_key
+from mediaflow_proxy.utils.acestream import acestream_manager
 
 logging.basicConfig(level=settings.log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -42,8 +44,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown (if needed)
-    pass
+    # Shutdown
+    logger.info("Shutting down...")
+    # Close acestream sessions
+    await acestream_manager.close()
+    logger.info("Acestream manager closed")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -268,9 +273,10 @@ async def check_base64_url(url: str):
 app.include_router(diagnostics_router, prefix="/v1", tags=["diagnostics"])
 app.include_router(ai_playlist_router, prefix="/v1/playlist", tags=["ai_playlist"])
 
-app.include_router(proxy_router, prefix="/proxy", tags=["proxy"])
-app.include_router(extractor_router, prefix="/extractor", tags=["extractors"])
-app.include_router(speedtest_router, prefix="/speedtest", tags=["speedtest"])
+app.include_router(proxy_router, prefix="/proxy", tags=["proxy"], dependencies=[Depends(verify_api_key)])
+app.include_router(acestream_router, prefix="/proxy", tags=["acestream"], dependencies=[Depends(verify_api_key)])
+app.include_router(extractor_router, prefix="/extractor", tags=["extractors"], dependencies=[Depends(verify_api_key)])
+app.include_router(speedtest_router, prefix="/speedtest", tags=["speedtest"], dependencies=[Depends(verify_api_key)])
 app.include_router(playlist_builder_router, prefix="/playlist", tags=["playlist"])
 app.include_router(xtream_root_router, tags=["xtream"])
 

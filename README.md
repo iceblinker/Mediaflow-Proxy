@@ -40,6 +40,14 @@ MediaFlow Proxy is a powerful and flexible solution for proxifying various types
 - Compatible with any XC-compatible IPTV player (TiviMate, IPTV Smarters, etc.)
 - Automatic URL rewriting for seamless proxying
 
+### Acestream Proxy
+- **Acestream P2P stream proxy** - Proxy Acestream content through MediaFlow (inspired by [Acexy](https://github.com/Javinator9889/acexy))
+- Support for both **HLS manifest** and **MPEG-TS stream** output formats
+- **Stream multiplexing** - Multiple clients can watch the same stream simultaneously
+- Automatic **session management** with cross-process coordination
+- Works with content IDs (`acestream://...`) and infohashes (magnet links)
+- Compatible with any media player that supports HLS or MPEG-TS
+
 ### Security
 - API password protection against unauthorized access & Network bandwidth abuse prevention
 - Parameter encryption to hide sensitive information
@@ -167,6 +175,7 @@ Set the following environment variables:
 - `HLS_PREBUFFER_MAX_MEMORY_PERCENT`: Optional. Maximum percentage of system memory to use for HLS pre-buffer cache. Default: `80`. Only effective when `ENABLE_HLS_PREBUFFER` is `true`.
 - `HLS_PREBUFFER_EMERGENCY_THRESHOLD`: Optional. Emergency threshold (%) to trigger aggressive HLS cache cleanup. Default: `90`. Only effective when `ENABLE_HLS_PREBUFFER` is `true`.
 - `HLS_PREBUFFER_INACTIVITY_TIMEOUT`: Optional. Seconds of inactivity before stopping HLS playlist refresh. Default: `60`. Helps clean up resources when streams are stopped.
+- `LIVESTREAM_START_OFFSET`: Optional. Default start offset (in seconds) for live streams (HLS and MPD). Default: `-18`. This injects `#EXT-X-START:TIME-OFFSET` into live media playlists, causing players to start behind the live edge. This creates headroom for prebuffering to work effectively on live streams. Set to empty/unset to disable automatic injection for live streams.
 - `ENABLE_DASH_PREBUFFER`: Optional. Enables DASH pre-buffering for improved streaming performance. Default: `true`. Pre-buffering downloads upcoming segments ahead of playback to reduce buffering. Set to `false` to disable for low-memory environments.
 - `DASH_PREBUFFER_SEGMENTS`: Optional. Number of DASH segments to pre-buffer ahead. Default: `5`. Only effective when `ENABLE_DASH_PREBUFFER` is `true`.
 - `DASH_PREBUFFER_CACHE_SIZE`: Optional. Maximum number of DASH segments to keep in memory cache. Default: `50`. Only effective when `ENABLE_DASH_PREBUFFER` is `true`.
@@ -175,6 +184,65 @@ Set the following environment variables:
 - `DASH_PREBUFFER_INACTIVITY_TIMEOUT`: Optional. Seconds of inactivity before cleaning up DASH stream state. Default: `60`. Helps clean up resources when streams are stopped.
 - `DASH_SEGMENT_CACHE_TTL`: Optional. TTL in seconds for cached DASH segments. Default: `60`. Longer values help with slow network playback.
 - `FORWARDED_ALLOW_IPS`: Optional. Controls which IP addresses are trusted to provide forwarded headers (X-Forwarded-For, X-Forwarded-Proto, etc.) when MediaFlow Proxy is deployed behind reverse proxies or load balancers. Default: `127.0.0.1`. See [Forwarded Headers Configuration](#forwarded-headers-configuration) for detailed usage.
+
+### Acestream Configuration
+
+MediaFlow Proxy can act as a proxy for Acestream P2P streams, converting them to HLS or MPEG-TS format that any media player can consume.
+
+**Requirements**: You need a running Acestream engine accessible from MediaFlow Proxy.
+
+- `ENABLE_ACESTREAM`: Optional. Enable Acestream proxy support. Default: `false`.
+- `ACESTREAM_HOST`: Optional. Acestream engine host. Default: `localhost`.
+- `ACESTREAM_PORT`: Optional. Acestream engine port. Default: `6878`.
+- `ACESTREAM_SESSION_TIMEOUT`: Optional. Session timeout (seconds) for cleanup of inactive sessions. Default: `60`.
+- `ACESTREAM_KEEPALIVE_INTERVAL`: Optional. Interval (seconds) for session keepalive polling. Default: `15`.
+
+#### Acestream Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `/proxy/acestream/stream` | MPEG-TS stream proxy (recommended) |
+| `/proxy/acestream/manifest.m3u8` | HLS manifest proxy |
+| `/proxy/acestream/status` | Get session status |
+
+#### Acestream URL Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Acestream content ID (alternative to infohash) |
+| `infohash` | Acestream infohash (40-char hex from magnet link) |
+
+**Example URLs:**
+```
+# MPEG-TS stream (recommended)
+https://your-mediaflow/proxy/acestream/stream?id=YOUR_CONTENT_ID&api_password=your_password
+
+# MPEG-TS stream (infohash from magnet)
+https://your-mediaflow/proxy/acestream/stream?infohash=b04372b9543d763bd2dbd2a1842d9723fd080076&api_password=your_password
+
+# HLS manifest (alternative)
+https://your-mediaflow/proxy/acestream/manifest.m3u8?id=YOUR_CONTENT_ID&api_password=your_password
+```
+
+#### Docker Compose Example with Acestream
+
+```yaml
+services:
+  mediaflow-proxy:
+    image: mhdzumair/mediaflow-proxy:latest
+    ports:
+      - "8888:8888"
+    environment:
+      - API_PASSWORD=your_password
+      - ENABLE_ACESTREAM=true
+      - ACESTREAM_HOST=acestream
+      - ACESTREAM_PORT=6878
+
+  acestream:
+    image: ghcr.io/martinbjeldbak/acestream-http-proxy:latest # or build it from https://github.com/sergiomarquezdev/acestream-docker-home
+    ports:
+      - "6878:6878"
+```
 
 ### Transport Configuration
 
@@ -898,43 +966,74 @@ Configure your IPTV player with the following settings:
 | Setting | Value |
 |---------|-------|
 | **Server URL** | `http://your-mediaflow-server:8888` |
-| **Username** | `{base64_upstream}:{actual_username}:{api_password}` |
+| **Username** | Base64-encoded string (see below) |
 | **Password** | Your XC provider password |
 
-Where:
-- `base64_upstream`: Base64-encoded URL of your XC provider (e.g., `http://provider.com:8080` → `aHR0cDovL3Byb3ZpZGVyLmNvbTo4MDgw`)
-- `actual_username`: Your actual XC username from the provider
-- `api_password`: Your MediaFlow API password (omit if not configured)
+#### Username Format (Recommended)
 
-#### Username Format Examples
+The username should be a **base64-encoded string** containing your provider URL, XC username, and MediaFlow API password. This format is compatible with all IPTV players (TiviMate, IPTV Smarters, OTT Navigator, etc.).
 
-**With MediaFlow API password:**
+**Format before encoding:**
 ```
-aHR0cDovL3Byb3ZpZGVyLmNvbTo4MDgw:myusername:my_mediaflow_password
+{provider_url}:{xc_username}:{api_password}
+```
+
+**Example:**
+```
+http://provider.com:8080:myusername:my_mediaflow_password
+```
+
+After base64 encoding, this becomes a single string like:
+```
+aHR0cDovL3Byb3ZpZGVyLmNvbTo4MDgwOm15dXNlcm5hbWU6bXlfbWVkaWFmbG93X3Bhc3N3b3Jk
 ```
 
 **Without MediaFlow API password:**
 ```
-aHR0cDovL3Byb3ZpZGVyLmNvbTo4MDgw:myusername:
+http://provider.com:8080:myusername
 ```
 
-#### Generating Base64 Upstream URL
+Encoded:
+```
+aHR0cDovL3Byb3ZpZGVyLmNvbTo4MDgwOm15dXNlcm5hbWU
+```
 
-You can encode your XC provider URL using the URL Generator tool at `http://your-mediaflow-server:8888/url-generator` or manually:
+#### Generating the Username
+
+Use the **URL Generator tool** at `http://your-mediaflow-server:8888/url-generator` (recommended) or manually:
 
 **Using command line:**
 ```bash
-echo -n "http://provider.com:8080" | base64
-# Output: aHR0cDovL3Byb3ZpZGVyLmNvbTo4MDgw
+# With API password
+echo -n "http://provider.com:8080:myusername:my_api_password" | base64
+
+# Without API password
+echo -n "http://provider.com:8080:myusername" | base64
 ```
 
 **Using Python:**
 ```python
 import base64
-url = "http://provider.com:8080"
-encoded = base64.urlsafe_b64encode(url.encode()).decode().rstrip('=')
+
+# With API password
+combined = "http://provider.com:8080:myusername:my_api_password"
+encoded = base64.urlsafe_b64encode(combined.encode()).decode().rstrip('=')
+print(encoded)
+
+# Without API password
+combined = "http://provider.com:8080:myusername"
+encoded = base64.urlsafe_b64encode(combined.encode()).decode().rstrip('=')
 print(encoded)
 ```
+
+#### Legacy Format (Still Supported)
+
+The legacy colon-separated format is still supported for backward compatibility:
+```
+{base64_upstream}:{actual_username}:{api_password}
+```
+
+However, some IPTV apps may not handle colons in the username field correctly. The new base64-encoded format is recommended.
 
 #### Supported XC API Endpoints
 
@@ -956,20 +1055,20 @@ MediaFlow proxies all standard XC API endpoints:
 **TiviMate:**
 1. Add Playlist → Xtream Codes Login
 2. Server: `http://your-mediaflow-server:8888`
-3. Username: `{base64_upstream}:{actual_username}:{api_password}`
+3. Username: Paste the base64-encoded username from the URL Generator
 4. Password: Your XC password
 
 **IPTV Smarters:**
 1. Add User → Xtream Codes API
 2. Any Name: Your choice
-3. Username: `{base64_upstream}:{actual_username}:{api_password}`
+3. Username: Paste the base64-encoded username from the URL Generator
 4. Password: Your XC password
 5. URL: `http://your-mediaflow-server:8888`
 
 **OTT Navigator:**
 1. Add Provider → Xtream
 2. Portal URL: `http://your-mediaflow-server:8888`
-3. Login: `{base64_upstream}:{actual_username}:{api_password}`
+3. Login: Paste the base64-encoded username from the URL Generator
 4. Password: Your XC password
 
 ### URL Parameters
@@ -999,6 +1098,16 @@ Skip specific time ranges in HLS and DASH/MPD streams. Useful for skipping intro
 - **Precision:** Segment-level precision (segments overlapping with skip ranges are removed entirely)  
 - **Decimal Support:** Supports decimal values for precise timing (e.g., `skip=0-112.5,120.25-150.75`)  
 - **Example:** `&skip=0-90` skips the first 90 seconds (intro), `&skip=0-90,1750-1800` skips intro and outro
+
+**`&start_offset=-18`**  
+Inject `#EXT-X-START:TIME-OFFSET` tag into HLS playlists to control playback start position. Particularly useful for live streams to enable prebuffering.  
+- **Usage:** Add `&start_offset=-18` to the proxy URL (negative value for live streams)  
+- **Effect:** Injects `#EXT-X-START:TIME-OFFSET=-18.0,PRECISE=YES` into the HLS manifest, causing players to start playback behind the live edge.  
+- **Supported Endpoints:** `/proxy/hls/manifest.m3u8`, `/proxy/mpd/playlist.m3u8`, `/proxy/acestream/manifest.m3u8`  
+- **Use Case:** For live streams, starting behind the live edge creates headroom for the prebuffer system to prefetch upcoming segments, resulting in smoother playback without buffering.  
+- **Default:** Can be configured globally via `LIVESTREAM_START_OFFSET` environment variable (default: `-18` for live streams). Set to empty to disable.  
+- **Note:** When using the default setting, the offset is only applied to live media playlists (not VOD or master playlists). Explicit `start_offset` parameter overrides this behavior.  
+- **Example:** `&start_offset=-18` starts playback 18 seconds behind the live edge
 
 **`&x_headers=content-length,transfer-encoding`**  
 Remove specific headers from the proxied response.  
@@ -1099,6 +1208,21 @@ mpv "http://localhost:8888/proxy/mpd/manifest.m3u8?d=https://example.com/manifes
 # Skip multiple segments with decimal precision
 mpv "http://localhost:8888/proxy/hls/manifest.m3u8?d=https://example.com/playlist.m3u8&skip=0-112.5,1750.25-1800.75&api_password=your_password"
 ```
+
+#### Live Stream with Start Offset (Prebuffer Support)
+
+```bash
+# Start 18 seconds behind the live edge for HLS (allows prebuffer to work effectively)
+mpv "http://localhost:8888/proxy/hls/manifest.m3u8?d=https://example.com/live/playlist.m3u8&start_offset=-18&api_password=your_password"
+
+# For live DASH/MPD streams converted to HLS
+mpv "http://localhost:8888/proxy/mpd/manifest.m3u8?d=https://example.com/live/manifest.mpd&start_offset=-18&api_password=your_password"
+
+# For Acestream live streams with start offset
+mpv "http://localhost:8888/proxy/acestream/manifest.m3u8?id=your_content_id&start_offset=-18&api_password=your_password"
+```
+
+**Note:** The `start_offset` parameter is particularly useful for live streams where the prebuffer system cannot prefetch segments when sitting at the live edge. By starting slightly behind (e.g., `-18` seconds), there are future segments available for prebuffering, resulting in smoother playback. This works for both native HLS and DASH/MPD streams converted to HLS.
 
 #### Stream with Header Removal (Fix Content-Length Issues)
 
@@ -1489,6 +1613,7 @@ MediaFlow Proxy was developed with inspiration from various projects and resourc
 
 - [Stremio Server](https://github.com/Stremio/stremio-server) for HLS Proxify implementation, which inspired our HLS M3u8 Manifest parsing and redirection proxify support.
 - [Comet Debrid proxy](https://github.com/g0ldyy/comet) for the idea of proxifying HTTPS video streams.
+- [Acexy](https://github.com/Javinator9889/acexy) for the Acestream proxy implementation inspiration, particularly the stream multiplexing and session management concepts.
 - [Bento4 mp4decrypt](https://www.bento4.com/developers/dash/encryption_and_drm/), [GPAC mp4box](https://wiki.gpac.io/xmlformats/Common-Encryption/), [Shaka Packager](https://github.com/shaka-project/shaka-packager), and [devine](https://github.com/devine-dl/devine) for insights on parsing MPD and decrypting CENC/ClearKey DRM protected content across all encryption modes (cenc, cens, cbc1, cbcs).
 - Test URLs were sourced from:
   - [OTTVerse MPEG-DASH MPD Examples](https://ottverse.com/free-mpeg-dash-mpd-manifest-example-test-urls/)
