@@ -19,11 +19,11 @@ def rewrite_m3u_links_streaming(
     m3u_lines_iterator: Iterator[str], base_url: str, api_password: Optional[str]
 ) -> Iterator[str]:
     """
-    Riscrive i link da un iteratore di linee M3U secondo le regole specificate,
-    includendo gli headers da #EXTVLCOPT e #EXTHTTP. Yields rewritten lines.
+    Rewrites links from an M3U line iterator according to the specified rules,
+    including headers from #EXTVLCOPT and #EXTHTTP. Yields rewritten lines.
     """
-    current_ext_headers: Dict[str, str] = {}  # Dizionario per conservare gli headers dalle direttive
-    current_kodi_props: Dict[str, str] = {}  # Dizionario per conservare le proprietà KODI
+    current_ext_headers: Dict[str, str] = {}  # Dictionary to store headers from directives
+    current_kodi_props: Dict[str, str] = {}  # Dictionary to store KODI properties
 
     for line_with_newline in m3u_lines_iterator:
         line_content = line_with_newline.rstrip("\n")
@@ -49,11 +49,11 @@ def rewrite_m3u_links_streaming(
                         header_value = header_value.strip()
                         current_ext_headers[header_key] = header_value
                     elif key_vlc.startswith("http-"):
-                        # Gestisce http-user-agent, http-referer etc.
+                        # Handle http-user-agent, http-referer, etc.
                         header_key = key_vlc[len("http-") :]
                         current_ext_headers[header_key] = value_vlc
             except Exception as e:
-                logger.error(f"⚠️ Error parsing #EXTVLCOPT '{logical_line}': {e}")
+                logger.error(f"Error parsing #EXTVLCOPT '{logical_line}': {e}")
 
         elif logical_line.startswith("#EXTHTTP:"):
             # Yield the original line to preserve it
@@ -62,11 +62,11 @@ def rewrite_m3u_links_streaming(
             is_header_tag = True
             try:
                 json_str = logical_line.split(":", 1)[1]
-                # Sostituisce tutti gli header correnti con quelli del JSON
+                # Replace all current headers with those from the JSON
                 current_ext_headers = json.loads(json_str)
             except Exception as e:
-                logger.error(f"⚠️ Error parsing #EXTHTTP '{logical_line}': {e}")
-                current_ext_headers = {}  # Resetta in caso di errore
+                logger.error(f"Error parsing #EXTHTTP '{logical_line}': {e}")
+                current_ext_headers = {}  # Reset on error
 
         elif logical_line.startswith("#KODIPROP:"):
             # Yield the original line to preserve it
@@ -79,7 +79,7 @@ def rewrite_m3u_links_streaming(
                     key_kodi, value_kodi = prop_str.split("=", 1)
                     current_kodi_props[key_kodi.strip()] = value_kodi.strip()
             except Exception as e:
-                logger.error(f"⚠️ Error parsing #KODIPROP '{logical_line}': {e}")
+                logger.error(f"Error parsing #KODIPROP '{logical_line}': {e}")
 
         if is_header_tag:
             continue
@@ -143,13 +143,6 @@ def rewrite_m3u_links_streaming(
                 if key:
                     processed_url_content += f"&key={key}"
 
-            # Aggiungi chiavi da #KODIPROP se presenti
-            license_key = current_kodi_props.get("inputstream.adaptive.license_key")
-            if license_key and ":" in license_key:
-                key_id_kodi, key_kodi = license_key.split(":", 1)
-                processed_url_content += f"&key_id={key_id_kodi}"
-                processed_url_content += f"&key={key_kodi}"
-
             elif ".php" in logical_line:
                 encoded_url = urllib.parse.quote(logical_line, safe="")
                 processed_url_content = f"{base_url}/proxy/hls/manifest.m3u8?d={encoded_url}"
@@ -157,6 +150,16 @@ def rewrite_m3u_links_streaming(
                 # Per tutti gli altri link senza estensioni specifiche, trattali come .m3u8 con codifica
                 encoded_url = urllib.parse.quote(logical_line, safe="")
                 processed_url_content = f"{base_url}/proxy/hls/manifest.m3u8?d={encoded_url}"
+
+            # Aggiungi chiavi da #KODIPROP se presenti
+            license_key = current_kodi_props.get("inputstream.adaptive.license_key")
+            if license_key and ":" in license_key:
+                key_id_kodi, key_kodi = license_key.split(":", 1)
+                # Aggiungi key_id e key solo se non sono già stati aggiunti (es. dall'URL MPD)
+                if "&key_id=" not in processed_url_content:
+                    processed_url_content += f"&key_id={key_id_kodi}"
+                if "&key=" not in processed_url_content:
+                    processed_url_content += f"&key={key_kodi}"
 
             # Applica gli header raccolti prima di api_password
             if current_ext_headers:
@@ -169,10 +172,10 @@ def rewrite_m3u_links_streaming(
                 processed_url_content += header_params_str
                 current_ext_headers = {}
 
-            # Resetta le proprietà KODI dopo averle usate
+            # Reset KODI properties after using them
             current_kodi_props = {}
 
-            # Aggiungi api_password sempre alla fine
+            # Always append api_password at the end
             if api_password:
                 processed_url_content += f"&api_password={api_password}"
 
@@ -207,16 +210,16 @@ async def async_download_m3u_playlist(url: str) -> list[str]:
 
 def parse_channel_entries(lines: list[str]) -> list[list[str]]:
     """
-    Analizza le linee di una playlist M3U e le raggruppa in entry di canali.
-    Ogni entry è una lista di linee che compongono un singolo canale
-    (da #EXTINF fino all'URL, incluse le righe intermedie).
+    Parse the lines of an M3U playlist and group them into channel entries.
+    Each entry is a list of lines that make up a single channel
+    (from #EXTINF to the URL, including intermediate lines).
     """
     entries = []
     current_entry = []
     for line in lines:
         stripped_line = line.strip()
         if stripped_line.startswith("#EXTINF:"):
-            if current_entry:  # In caso di #EXTINF senza URL precedente
+            if current_entry:  # In case of #EXTINF without a preceding URL
                 logger.warning(
                     f"Found a new #EXTINF tag before a URL was found for the previous entry. Discarding: {current_entry}"
                 )
@@ -242,7 +245,7 @@ async def async_generate_combined_playlist(playlist_definitions: list[str], base
             should_sort = True
             definition = definition[len("sort:") :]
 
-        if definition.startswith("no_proxy:"):  # Può essere combinato con sort:
+        if definition.startswith("no_proxy:"):  # Can be combined with sort:
             should_proxy = False
             playlist_url_str = definition[len("no_proxy:") :]
         else:
@@ -250,13 +253,13 @@ async def async_generate_combined_playlist(playlist_definitions: list[str], base
 
         download_tasks.append({"url": playlist_url_str, "proxy": should_proxy, "sort": should_sort})
 
-    # Scarica tutte le playlist in parallelo
+    # Download all playlists in parallel
     results = await asyncio.gather(
         *[async_download_m3u_playlist(task["url"]) for task in download_tasks], return_exceptions=True
     )
 
     # Raggruppa le playlist da ordinare e quelle da non ordinare
-    sorted_playlist_lines = []
+    channel_entries_to_sort = []
     unsorted_playlists_data = []
 
     for idx, result in enumerate(results):
@@ -269,7 +272,10 @@ async def async_generate_combined_playlist(playlist_definitions: list[str], base
             continue
 
         if task_info.get("sort", False):
-            sorted_playlist_lines.extend(result)
+            # Se la playlist deve essere ordinata, estraiamo i canali e li mettiamo nel pool globale da ordinare
+            entries = parse_channel_entries(result)
+            for entry_lines in entries:
+                channel_entries_to_sort.append((entry_lines, task_info["proxy"]))
         else:
             unsorted_playlists_data.append({"lines": result, "proxy": task_info["proxy"]})
 
@@ -292,30 +298,19 @@ async def async_generate_combined_playlist(playlist_definitions: list[str], base
             first_playlist_header_handled = True
 
     # 1. Processa e ordina le playlist marcate con 'sort'
-    if sorted_playlist_lines:
-        # Estrai le entry dei canali
-        # Modifica: Estrai le entry e mantieni l'informazione sul proxy
-        channel_entries_with_proxy_info = []
-        for idx, result in enumerate(results):
-            task_info = download_tasks[idx]
-            if task_info.get("sort") and isinstance(result, list):
-                entries = parse_channel_entries(result)  # result è la lista di linee della playlist
-                for entry_lines in entries:
-                    # L'opzione proxy si applica a tutto il blocco del canale
-                    channel_entries_with_proxy_info.append((entry_lines, task_info["proxy"]))
+    if channel_entries_to_sort:
+        # Sort all entries from ALL sorted playlists together by channel name (from #EXTINF)
+        # The first line of each entry is always #EXTINF
+        channel_entries_to_sort.sort(key=lambda x: x[0][0].split(",")[-1].strip().lower())
 
-        # Ordina le entry in base al nome del canale (da #EXTINF)
-        # La prima riga di ogni entry è sempre #EXTINF
-        channel_entries_with_proxy_info.sort(key=lambda x: x[0][0].split(",")[-1].strip())
-
-        # Gestisci l'header una sola volta per il blocco ordinato
+        # Handle the header only once for the sorted block
         if not first_playlist_header_handled:
             yield "#EXTM3U\n"
             first_playlist_header_handled = True
 
-        # Applica la riscrittura dei link in modo selettivo
-        for entry_lines, should_proxy in channel_entries_with_proxy_info:
-            # L'URL è l'ultima riga dell'entry
+        # Apply link rewriting selectively
+        for entry_lines, should_proxy in channel_entries_to_sort:
+            # The URL is the last line of the entry
             url = entry_lines[-1]
             # Yield tutte le righe prima dell'URL
             for line in entry_lines[:-1]:

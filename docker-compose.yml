@@ -1,6 +1,21 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: mfp-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    # Optional: expose Redis port for debugging (remove in production)
+    # ports:
+    #   - '6379:6379'
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   mediaflow-proxy:
     # Use local build to include 4K optimizations (chunk size, pre-buffer defaults)
     build: .
@@ -12,6 +27,7 @@ services:
     environment:
       # Security & Access
       - API_PASSWORD=mfp
+      - REDIS_URL=redis://redis:6379
 
       # Logic: Workers should be (2 * Cores) + 1. 
       # For a 2-core VPS, use 5. For 4-core, use 9.
@@ -26,6 +42,7 @@ services:
 
       # IP TRUST: Tell Mediaflow to trust Caddy's headers
       # - FORWARDED_ALLOW_IPS=caddy
+      - FORWARDED_ALLOW_IPS=*
 
       - M3U8_CONTENT_ROUTING=mediaflow
       # Defaults from code logic (optional to override here):
@@ -36,6 +53,10 @@ services:
     networks:
       - media-net
       - ai_network
+
+    depends_on:
+      redis:
+        condition: service_healthy
 
     deploy:
       resources:
@@ -54,3 +75,6 @@ networks:
     driver: bridge
   ai_network:
     external: true
+
+volumes:
+  redis_data:

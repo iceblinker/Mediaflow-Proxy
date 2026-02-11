@@ -461,6 +461,12 @@ async def proxy_stream_endpoint(
     destination: str = Query(..., description="The URL of the stream.", alias="d"),
     filename: str | None = None,
     transformer: str = Query(None, description="Stream transformer ID for content manipulation"),
+    ratelimit: str = Query(
+        None,
+        description="Rate limit handler ID for host-specific rate limiting (e.g., 'vidoza', 'aggressive'). "
+        "If not specified, auto-detects based on destination URL hostname. "
+        "Set to 'none' to explicitly disable rate limiting.",
+    ),
 ):
     """
     Proxify stream requests to the given video URL.
@@ -468,16 +474,29 @@ async def proxy_stream_endpoint(
     This is a general-purpose stream proxy endpoint. For HLS segments with prebuffer
     support, use the dedicated /hls/segment.ts endpoint instead.
 
+    Rate limiting can be controlled via the `ratelimit` parameter:
+    - Not specified: Auto-detects based on destination URL (e.g., Vidoza is auto-detected)
+    - "vidoza": Explicitly enable Vidoza rate limiting (5s cooldown between connections)
+    - "aggressive": Generic aggressive rate limiting (3s cooldown)
+    - "none": Explicitly disable all rate limiting
+
     Args:
         request (Request): The incoming HTTP request.
         proxy_headers (ProxyRequestHeaders): The headers to include in the request.
         destination (str): The URL of the stream to be proxied.
         filename (str | None): The filename to be used in the response headers.
         transformer (str, optional): Stream transformer ID for content manipulation.
+        ratelimit (str, optional): Rate limit handler ID for host-specific rate limiting.
 
     Returns:
         Response: The HTTP response with the streamed content.
     """
+    # Log incoming request details for debugging seek issues
+    range_header = proxy_headers.request.get("range", "not set")
+    logger.info(
+        f"[proxy_stream] Request received - filename: {filename}, range: {range_header}, method: {request.method}"
+    )
+
     # Sanitize destination URL to fix common encoding issues
     destination = sanitize_url(destination)
 
@@ -510,9 +529,13 @@ async def proxy_stream_endpoint(
 
         proxy_headers.response.update({"content-disposition": content_disposition})
 
-    return await proxy_stream(request.method, destination, proxy_headers, transformer)
+    # Handle "none" as explicit disable
+    rate_limit_handler_id = None if ratelimit == "none" else ratelimit
+
+    return await proxy_stream(request.method, destination, proxy_headers, transformer, rate_limit_handler_id)
 
 
+@proxy_router.head("/mpd/manifest.m3u8")
 @proxy_router.get("/mpd/manifest.m3u8")
 async def mpd_manifest_proxy(
     request: Request,
@@ -548,6 +571,7 @@ async def mpd_manifest_proxy(
     return await get_manifest(request, manifest_params, proxy_headers)
 
 
+@proxy_router.head("/mpd/playlist.m3u8")
 @proxy_router.get("/mpd/playlist.m3u8")
 async def playlist_endpoint(
     request: Request,
@@ -591,6 +615,10 @@ async def segment_endpoint(
     """
     Retrieves and processes a media segment, decrypting it if necessary.
 
+    This endpoint serves fMP4 segments without TS remuxing. The playlist generator
+    already selects /segment.mp4 vs /segment.ts based on the resolved remux mode,
+    so this endpoint explicitly disables remuxing regardless of global settings.
+
     Args:
         segment_params (MPDSegmentParams): The parameters for the segment request.
         proxy_headers (ProxyRequestHeaders): The headers to include in the request.
@@ -598,7 +626,28 @@ async def segment_endpoint(
     Returns:
         Response: The HTTP response with the processed segment.
     """
-    return await get_segment(segment_params, proxy_headers)
+    return await get_segment(segment_params, proxy_headers, force_remux_ts=False)
+
+
+@proxy_router.get("/mpd/segment.ts")
+async def segment_ts_endpoint(
+    segment_params: Annotated[MPDSegmentParams, Query()],
+    proxy_headers: Annotated[ProxyRequestHeaders, Depends(get_proxy_headers)],
+):
+    """
+    Retrieves and processes a media segment, remuxing fMP4 to MPEG-TS.
+
+    This endpoint is used for HLS playlists when remux_to_ts is enabled.
+    Unlike /mpd/segment.mp4, this forces TS remuxing regardless of global settings.
+
+    Args:
+        segment_params (MPDSegmentParams): The parameters for the segment request.
+        proxy_headers (ProxyRequestHeaders): The headers to include in the request.
+
+    Returns:
+        Response: The HTTP response with the MPEG-TS segment.
+    """
+    return await get_segment(segment_params, proxy_headers, force_remux_ts=True)
 
 
 @proxy_router.get("/mpd/init.mp4")

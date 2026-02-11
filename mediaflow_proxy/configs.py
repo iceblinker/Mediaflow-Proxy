@@ -1,6 +1,6 @@
 from typing import Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     dash_segment_cache_ttl: int = 60  # TTL (seconds) for cached media segments; longer = better for slow playback.
     mpd_live_init_cache_ttl: int = 60  # TTL (seconds) for live init segment cache; 0 disables caching.
     mpd_live_playlist_depth: int = 8  # Number of recent segments to expose per live playlist variant.
+    remux_to_ts: bool = False  # Remux fMP4 segments to MPEG-TS for ExoPlayer/VLC compatibility.
+    processed_segment_cache_ttl: int = 60  # TTL (seconds) for caching processed (decrypted/remuxed) segments.
+
+    # FlareSolverr settings (for Cloudflare bypass)
+    flaresolverr_url: str | None = None  # FlareSolverr service URL. Example: http://localhost:8191
+    flaresolverr_timeout: int = 60  # Timeout (seconds) for FlareSolverr requests.
 
     # AI Integration
     ollama_host: str = "http://ollama:11434"  # URL for the Ollama instance for AI diagnostics
@@ -82,8 +88,25 @@ class Settings(BaseSettings):
     acestream_session_timeout: int = 60  # Session timeout (seconds) for cleanup of inactive sessions.
     acestream_keepalive_interval: int = 15  # Interval (seconds) for session keepalive polling.
 
+    # Telegram MTProto settings
+    enable_telegram: bool = False  # Whether to enable Telegram MTProto proxy support.
+    telegram_api_id: int | None = None  # Telegram API ID from https://my.telegram.org/apps
+    telegram_api_hash: SecretStr | None = None  # Telegram API hash from https://my.telegram.org/apps
+    telegram_session_string: SecretStr | None = None  # Persistent session string (avoids re-authentication).
+    telegram_max_connections: int = 8  # Max parallel DC connections for downloads (max 20, careful of floods).
+    telegram_request_timeout: int = 30  # Request timeout in seconds.
+
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"  # The user agent to use for HTTP requests.
     stream_chunk_size: int = 1048576  # Chunk size for streaming responses (default: 1MB)
+
+    # Upstream error resilience settings
+    upstream_retry_on_disconnect: bool = True  # Enable/disable retry when upstream disconnects mid-stream.
+    upstream_retry_attempts: int = 2  # Number of retry attempts when upstream disconnects during streaming.
+    upstream_retry_delay: float = 1.0  # Delay (seconds) between retry attempts.
+    graceful_stream_end: bool = True  # Return valid empty playlist instead of error when upstream fails.
+
+    # Redis settings
+    redis_url: str | None = None  # Redis URL for distributed locking and caching. None = disabled.
 
     class Config:
         env_file = ".env"

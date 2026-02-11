@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import time
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -12,7 +13,14 @@ from starlette.background import BackgroundTask
 from .const import SUPPORTED_RESPONSE_HEADERS
 from .mpd_processor import process_manifest, process_playlist, process_segment, process_init_segment
 from .schemas import HLSManifestParams, MPDManifestParams, MPDPlaylistParams, MPDSegmentParams, MPDInitParams
-from .utils.cache_utils import get_cached_mpd, get_cached_init_segment, get_cached_segment, set_cached_segment
+from .utils.cache_utils import (
+    get_cached_mpd,
+    get_cached_init_segment,
+    get_cached_segment,
+    set_cached_segment,
+    get_cached_processed_segment,
+    set_cached_processed_segment,
+)
 from .utils.dash_prebuffer import dash_prebuffer
 from .utils.http_utils import (
     Streamer,
@@ -24,43 +32,78 @@ from .utils.http_utils import (
     create_streamer,
     apply_header_manipulation,
 )
-from .utils.m3u8_processor import M3U8Processor
+from .utils.m3u8_processor import M3U8Processor, generate_graceful_end_playlist
 from .utils.mpd_utils import pad_base64
+from .utils.redis_utils import (
+    acquire_stream_gate,
+    release_stream_gate,
+    get_cached_head,
+    set_cached_head,
+    check_and_set_cooldown,
+    is_redis_configured,
+)
 from .utils.stream_transformers import StreamTransformer, get_transformer
+from .utils.rate_limit_handlers import get_rate_limit_handler
+
 from .configs import settings
 
 logger = logging.getLogger(__name__)
 
 
-def handle_exceptions(exception: Exception) -> Response:
+def handle_exceptions(exception: Exception, context: str = "") -> Response:
     """
     Handle exceptions and return appropriate HTTP responses.
 
+    Uses appropriate log levels based on exception type:
+    - DEBUG: Expected errors like 404 Not Found
+    - WARNING: Transient errors like timeouts, connection issues
+    - ERROR: Only for truly unexpected errors
+
     Args:
         exception (Exception): The exception that was raised.
+        context (str): Optional context string for better error messages.
 
     Returns:
         Response: An HTTP response corresponding to the exception type.
     """
+    ctx = f" [{context}]" if context else ""
+
     if isinstance(exception, aiohttp.ClientResponseError):
         if exception.status == 404:
-            logger.debug(f"Upstream 404: {exception.request_info.url if exception.request_info else 'unknown'}")
+            logger.debug(f"Upstream 404{ctx}: {exception.request_info.url if exception.request_info else 'unknown'}")
+            return Response(status_code=404, content="Upstream resource not found")
+        elif exception.status in (429, 509):
+            # Rate limited by upstream - pass through so the player can retry on its own
+            logger.warning(f"Upstream rate limited ({exception.status}){ctx}")
+            return Response(status_code=exception.status, content=f"Upstream rate limited: {exception.status}")
+        elif exception.status in (502, 503, 504):
+            # Upstream server errors - log at warning level as these are often transient
+            logger.warning(f"Upstream server error{ctx}: {exception.status}")
+            return Response(status_code=exception.status, content=f"Upstream server error: {exception.status}")
         else:
-            logger.error(f"Upstream service error while handling request: {exception}")
+            logger.warning(f"Upstream HTTP error{ctx}: {exception}")
         return Response(status_code=exception.status, content=f"Upstream service error: {exception}")
     elif isinstance(exception, DownloadError):
-        logger.error(f"Error downloading content: {exception}")
+        # DownloadError is expected for various upstream issues
+        logger.warning(f"Download error{ctx}: {exception}")
         return Response(status_code=exception.status_code, content=str(exception))
     elif isinstance(exception, tenacity.RetryError):
+        logger.warning(f"Max retries exceeded{ctx}")
         return Response(status_code=502, content="Max retries exceeded while downloading content")
     elif isinstance(exception, asyncio.TimeoutError):
-        logger.error(f"Timeout error: {exception}")
+        logger.warning(f"Timeout error{ctx}: upstream did not respond in time")
         return Response(status_code=504, content="Gateway timeout")
     elif isinstance(exception, aiohttp.ClientError):
-        logger.error(f"Client error: {exception}")
+        # Client errors are often network issues - warning level
+        logger.warning(f"Client error{ctx}: {exception}")
         return Response(status_code=502, content=f"Upstream connection error: {exception}")
+    elif isinstance(exception, ValueError) and "HTML instead of m3u8" in str(exception):
+        # Expected error when upstream returns error page instead of playlist
+        logger.warning(f"Upstream returned HTML{ctx}: stream may be offline or unavailable")
+        return Response(status_code=502, content=str(exception))
     else:
-        logger.exception(f"Internal server error while handling request: {exception}")
+        # Only use exception() (with traceback) for truly unexpected errors
+        logger.exception(f"Unexpected error{ctx}: {exception}")
         return Response(status_code=502, content=f"Internal server error: {exception}")
 
 
@@ -192,21 +235,135 @@ async def handle_stream_request(
     video_url: str,
     proxy_headers: ProxyRequestHeaders,
     transformer_id: Optional[str] = None,
+    rate_limit_handler_id: Optional[str] = None,
 ) -> Response:
     """
     Handle general stream requests.
 
     This function processes both HEAD and GET requests for video streams.
+    Uses Redis for cross-worker coordination to prevent CDN rate-limiting (e.g., Vidoza 509).
+
+    Rate limiting behavior is controlled by the rate_limit_handler parameter:
+    - If specified, uses that handler's settings
+    - If not specified, auto-detects based on video URL hostname
+    - If no handler matches, no rate limiting is applied (fast path)
+
+    The coordination strategy (when rate limiting is enabled):
+    1. HEAD requests: Check/use Redis cache, skip upstream entirely if cached
+    2. GET requests: Check cooldown FIRST, return 503 if in cooldown
+    3. Only ONE request proceeds to upstream at a time via gate
+    4. After upstream responds, set cooldown to prevent rapid follow-up requests
 
     Args:
         method (str): The HTTP method (e.g., 'GET' or 'HEAD').
         video_url (str): The URL of the video to stream.
         proxy_headers (ProxyRequestHeaders): Headers to be used in the proxy request.
         transformer_id (str, optional): ID of the stream transformer to use for content manipulation.
+        rate_limit_handler_id (str, optional): ID of the rate limit handler to use (e.g., "vidoza", "aggressive").
+            If not specified, auto-detects based on video URL hostname.
 
     Returns:
         Union[Response, EnhancedStreamingResponse]: Either a HEAD response with headers or a streaming response.
     """
+    host = urlparse(video_url).hostname or "unknown"
+    gate_acquired = False
+
+    # Get rate limit handler (explicit ID, auto-detect from URL, or default no-op)
+    rate_handler = get_rate_limit_handler(rate_limit_handler_id, video_url)
+
+    # Check if rate limiting features are needed and Redis is available
+    needs_rate_limiting = (
+        rate_handler.cooldown_seconds > 0 or rate_handler.use_head_cache or rate_handler.use_stream_gate
+    )
+    redis_available = is_redis_configured()
+
+    if needs_rate_limiting:
+        logger.info(
+            f"[handle_stream] Rate limiting ENABLED for {host}: "
+            f"cooldown={rate_handler.cooldown_seconds}s, gate={rate_handler.use_stream_gate}, "
+            f"head_cache={rate_handler.use_head_cache}, redis={redis_available}"
+        )
+
+    if needs_rate_limiting and not redis_available:
+        logger.warning(f"[handle_stream] Rate limiting requested for {host} but Redis not configured - skipping")
+        needs_rate_limiting = False
+
+    # Cooldown key - prevents rapid-fire requests to same CDN URL
+    cooldown_key = f"stream_cooldown:{video_url}"
+
+    # 1. Check Redis HEAD cache first (if enabled by handler)
+    cached = None
+    if needs_rate_limiting and rate_handler.use_head_cache:
+        cached = await get_cached_head(video_url)
+
+    if method == "HEAD":
+        if cached:
+            logger.info(f"[handle_stream] Serving cached HEAD response for {host}")
+            response_headers = prepare_response_headers(
+                cached["headers"], proxy_headers.response, proxy_headers.remove, proxy_headers.propagate
+            )
+            return Response(headers=response_headers, status_code=cached["status"])
+        # No cached HEAD - for rate-limited hosts, wait for cache via gate instead of hitting upstream
+        if needs_rate_limiting and rate_handler.use_stream_gate:
+            # Try to acquire gate - if we get it, we make the upstream HEAD request
+            # If another request holds the gate, we wait and then check cache again
+            gate_acquired = await acquire_stream_gate(video_url, timeout=30.0)
+            if gate_acquired:
+                # We got the gate - check cache again (another request may have populated it while we waited)
+                cached = await get_cached_head(video_url)
+                if cached:
+                    await release_stream_gate(video_url)
+                    logger.info(f"[handle_stream] Serving cached HEAD response after gate wait for {host}")
+                    response_headers = prepare_response_headers(
+                        cached["headers"], proxy_headers.response, proxy_headers.remove, proxy_headers.propagate
+                    )
+                    return Response(headers=response_headers, status_code=cached["status"])
+                # Cache still empty - we'll make the upstream request (gate is held)
+            else:
+                # Gate timeout - check cache one more time before giving up
+                cached = await get_cached_head(video_url)
+                if cached:
+                    logger.info(f"[handle_stream] Serving cached HEAD after gate timeout for {host}")
+                    response_headers = prepare_response_headers(
+                        cached["headers"], proxy_headers.response, proxy_headers.remove, proxy_headers.propagate
+                    )
+                    return Response(headers=response_headers, status_code=cached["status"])
+                logger.warning(f"[handle_stream] HEAD gate timeout for {host}, no cached headers available")
+                return Response(status_code=503, content="Upstream host is busy, try again later")
+        # No rate limiting - proceed to upstream without gate
+    else:
+        # For GET requests with rate limiting: wait for cooldown and acquire gate
+        if needs_rate_limiting and rate_handler.use_stream_gate:
+            # Wait for gate - this serializes all requests to the same URL
+            gate_acquired = await acquire_stream_gate(video_url, timeout=30.0)
+            if not gate_acquired:
+                logger.warning(f"[handle_stream] Gate timeout for {host}, upstream may be slow")
+                return Response(status_code=503, content="Upstream host is busy, try again later")
+
+            # Got the gate - now check/set cooldown
+            # If in cooldown, wait for it to expire before proceeding
+            if rate_handler.cooldown_seconds > 0:
+                max_wait = rate_handler.cooldown_seconds + 1  # Wait slightly longer than cooldown
+                wait_start = time.time()
+
+                while not await check_and_set_cooldown(cooldown_key, rate_handler.cooldown_seconds):
+                    # Still in cooldown - wait a bit and retry
+                    elapsed = time.time() - wait_start
+                    if elapsed >= max_wait:
+                        # Cooldown still active after max wait - give up
+                        await release_stream_gate(video_url)
+                        logger.warning(f"[handle_stream] Cooldown wait timeout for {host}")
+                        return Response(
+                            status_code=503,
+                            content="Stream busy, try again later",
+                            headers={"Retry-After": str(rate_handler.retry_after_seconds)},
+                        )
+                    logger.debug(f"[handle_stream] Waiting for cooldown to expire for {host}...")
+                    await asyncio.sleep(0.5)  # Poll every 500ms
+
+                # Cooldown acquired - we can proceed to upstream
+                logger.info(f"[handle_stream] Cooldown acquired for {host} after {time.time() - wait_start:.1f}s wait")
+
     streamer = await create_streamer(video_url)
 
     try:
@@ -225,12 +382,17 @@ async def handle_stream_request(
                 logger.warning(f"Failed to auto-resolve Vavoo URL: {e}")
                 # Continue with original URL if resolution fails
 
-        # Debug: log request headers being sent
-        logger.debug(f"Request headers being sent to upstream: {proxy_headers.request}")
-        await streamer.create_streaming_response(video_url, proxy_headers.request)
+        # Log timing for debugging seek performance
+        start_time = time.time()
+        range_header = proxy_headers.request.get("range", "not set")
+        logger.info(f"[handle_stream] Starting upstream {method} request - range: {range_header}")
 
-        # Debug: log upstream response headers
-        logger.debug(f"Upstream response status: {streamer.response.status}")
+        # Use the same HTTP method for upstream request (HEAD for HEAD, GET for GET)
+        # This prevents unnecessary data download when client just wants headers
+        await streamer.create_streaming_response(video_url, proxy_headers.request, method=method)
+
+        elapsed = time.time() - start_time
+        logger.info(f"[handle_stream] Upstream responded in {elapsed:.2f}s - status: {streamer.response.status}")
         logger.debug(f"Upstream response headers: {dict(streamer.response.headers)}")
 
         response_headers = prepare_response_headers(
@@ -247,21 +409,54 @@ async def handle_stream_request(
         # Get transformer instance if specified
         transformer = get_transformer(transformer_id)
 
+        # Cache headers in Redis for future HEAD probes (if rate limiting enabled)
+        if needs_rate_limiting and rate_handler.use_head_cache and status_code in (200, 206):
+            await set_cached_head(video_url, dict(streamer.response.headers), status_code)
+
         if method == "HEAD":
-            # For HEAD requests, just return the headers without streaming content
+            # HEAD requests always release gate immediately
+            if gate_acquired:
+                await release_stream_gate(video_url)
+                gate_acquired = False
             await streamer.close()
             return Response(headers=response_headers, status_code=status_code)
         else:
-            # For GET requests, return the streaming response
-            return EnhancedStreamingResponse(
-                streamer.stream_content(transformer),
-                headers=response_headers,
-                status_code=status_code,
-                background=BackgroundTask(streamer.close),
-            )
+            # For GET requests: check if we need exclusive streaming
+            if gate_acquired and needs_rate_limiting and rate_handler.exclusive_stream:
+                # EXCLUSIVE MODE: Keep gate held during entire stream
+                # Release gate in background task when stream ends
+                logger.info(f"[handle_stream] Exclusive stream mode - gate held during stream for {host}")
+
+                async def cleanup_exclusive():
+                    await streamer.close()
+                    await release_stream_gate(video_url)
+                    logger.info(f"[handle_stream] Exclusive stream ended - gate released for {host}")
+
+                gate_acquired = False  # Background task will release it
+                return EnhancedStreamingResponse(
+                    streamer.stream_content(transformer),
+                    headers=response_headers,
+                    status_code=status_code,
+                    background=BackgroundTask(cleanup_exclusive),
+                )
+            else:
+                # NORMAL MODE: Release gate after headers, stream continues freely
+                if gate_acquired:
+                    await release_stream_gate(video_url)
+                    gate_acquired = False
+                return EnhancedStreamingResponse(
+                    streamer.stream_content(transformer),
+                    headers=response_headers,
+                    status_code=status_code,
+                    background=BackgroundTask(streamer.close),
+                )
     except Exception as e:
         await streamer.close()
         return handle_exceptions(e)
+    finally:
+        # Safety: release gate if not already released (error path before headers received)
+        if gate_acquired:
+            await release_stream_gate(video_url)
 
 
 def prepare_response_headers(
@@ -303,6 +498,7 @@ async def proxy_stream(
     destination: str,
     proxy_headers: ProxyRequestHeaders,
     transformer_id: Optional[str] = None,
+    rate_limit_handler_id: Optional[str] = None,
 ):
     """
     Proxies the stream request to the given video URL.
@@ -312,11 +508,13 @@ async def proxy_stream(
         destination (str): The URL of the stream to be proxied.
         proxy_headers (ProxyRequestHeaders): The headers to include in the request.
         transformer_id (str, optional): ID of the stream transformer to use.
+        rate_limit_handler_id (str, optional): ID of the rate limit handler to use (e.g., "vidoza").
+            If not specified, auto-detects based on destination URL hostname.
 
     Returns:
         Response: The HTTP response with the streamed content.
     """
-    return await handle_stream_request(method, destination, proxy_headers, transformer_id)
+    return await handle_stream_request(method, destination, proxy_headers, transformer_id, rate_limit_handler_id)
 
 
 async def fetch_and_process_m3u8(
@@ -382,12 +580,30 @@ async def fetch_and_process_m3u8(
         try:
             first_chunk = await m3u8_generator.__anext__()
         except ValueError as e:
-            # Upstream returned HTML instead of m3u8
+            # Upstream returned HTML instead of m3u8 - expected error, log at warning level
+            logger.warning(f"Upstream error for {url}: {e}")
             await streamer.close()
+            # Return graceful end playlist if enabled, otherwise raise error
+            if settings.graceful_stream_end:
+                graceful_content = generate_graceful_end_playlist("Stream offline or unavailable")
+                return Response(
+                    content=graceful_content,
+                    media_type="application/vnd.apple.mpegurl",
+                    headers=response_headers,
+                )
             raise HTTPException(status_code=502, detail=str(e))
         except StopAsyncIteration:
             # Empty response - this shouldn't happen for valid m3u8
+            logger.warning(f"Upstream returned empty m3u8 playlist: {url}")
             await streamer.close()
+            # Return graceful end playlist if enabled, otherwise raise error
+            if settings.graceful_stream_end:
+                graceful_content = generate_graceful_end_playlist("Empty upstream response")
+                return Response(
+                    content=graceful_content,
+                    media_type="application/vnd.apple.mpegurl",
+                    headers=response_headers,
+                )
             raise HTTPException(status_code=502, detail="Upstream returned empty m3u8 playlist")
 
         # Create a wrapper that yields the first chunk then continues with the rest
@@ -399,7 +615,7 @@ async def fetch_and_process_m3u8(
             except ValueError as e:
                 # This shouldn't happen since we already validated the first chunk,
                 # but handle it gracefully if it does
-                logger.error(f"Unexpected ValueError during m3u8 streaming: {e}")
+                logger.warning(f"ValueError during m3u8 streaming (after initial validation): {e}")
 
         # Create streaming response with on-the-fly processing
         return EnhancedStreamingResponse(
@@ -434,11 +650,36 @@ async def handle_drm_key_data(key_id, key, drm_info):
             key_id = drm_info["keyId"]
             key = drm_info["key"]
         elif "laUrl" in drm_info and "keyId" in drm_info:
-            raise HTTPException(status_code=400, detail="LA URL is not supported yet")
+            # License URL with keyId - license acquisition should have been attempted already
+            # If we still don't have a key, it means acquisition failed
+            pass
         else:
-            raise HTTPException(
-                status_code=400, detail="Unable to determine key_id and key, and they were not provided"
-            )
+            # Try to use extracted KID if available (from MPD/init segment analysis)
+            if not key_id and drm_info.get("extracted_kids"):
+                # Use the first extracted KID
+                extracted_kids = drm_info["extracted_kids"]
+                if extracted_kids:
+                    key_id = extracted_kids[0]
+                    logger.info(f"Using extracted KID from MPD/init segment: {key_id}")
+
+            # Still require the actual decryption key
+            if not key:
+                if drm_info.get("extracted_kids"):
+                    license_urls = drm_info.get("license_urls", [])
+                    license_url_msg = f" License server: {license_urls[0]}" if license_urls else ""
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Key ID (KID) was automatically extracted: {key_id}. "
+                            f"However, the actual decryption key must be provided via the 'key' parameter. "
+                            f"The key cannot be extracted from the MPD or init segment and must be obtained "
+                            f"from the license server or source website.{license_url_msg}"
+                        ),
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=400, detail="Unable to determine key_id and key, and they were not provided"
+                    )
 
     return key_id, key
 
@@ -528,6 +769,7 @@ async def get_playlist(
 async def get_segment(
     segment_params: MPDSegmentParams,
     proxy_headers: ProxyRequestHeaders,
+    force_remux_ts: bool = None,
 ):
     """
     Retrieves and processes a media segment, decrypting it if necessary.
@@ -539,6 +781,8 @@ async def get_segment(
     Args:
         segment_params (MPDSegmentParams): The parameters for the segment request.
         proxy_headers (ProxyRequestHeaders): The headers to include in the request.
+        force_remux_ts (bool, optional): If True, force remuxing to MPEG-TS regardless
+            of global settings. Used by /mpd/segment.ts endpoint. Defaults to None.
 
     Returns:
         Response: The HTTP response with the processed segment.
@@ -546,6 +790,17 @@ async def get_segment(
     try:
         live_cache_ttl = settings.mpd_live_init_cache_ttl if segment_params.is_live else None
         segment_url = segment_params.segment_url
+        should_remux = force_remux_ts if force_remux_ts is not None else settings.remux_to_ts
+
+        # Check processed segment cache first (avoids re-decrypting/re-remuxing)
+        is_processed = bool(segment_params.key_id or should_remux)
+        if is_processed:
+            processed_content = await get_cached_processed_segment(segment_url, segment_params.key_id, should_remux)
+            if processed_content:
+                logger.info(f"Serving processed segment from cache: {segment_url}")
+                mimetype = "video/mp2t" if should_remux else segment_params.mime_type
+                response_headers = apply_header_manipulation({}, proxy_headers)
+                return Response(content=processed_content, media_type=mimetype, headers=response_headers)
 
         # Use event-based coordination for segment download
         # get_or_download() handles:
@@ -553,21 +808,52 @@ async def get_segment(
         # - Waiting for existing downloads (via asyncio.Event)
         # - Starting new download if needed
         # - Caching the result
+        # Use a short timeout (1s) for player requests to avoid blocking if prebuffer is busy
+        # This ensures players get fast responses even when background prefetching is active
         if settings.enable_dash_prebuffer:
-            segment_content = await dash_prebuffer.get_or_download(segment_url, proxy_headers.request)
+            segment_content = await dash_prebuffer.get_or_download(segment_url, proxy_headers.request, timeout=1.0)
         else:
             # Prebuffer disabled - check cache then download directly
             segment_content = await get_cached_segment(segment_url)
             if not segment_content:
-                segment_content = await download_file_with_retry(segment_url, proxy_headers.request)
-                # Cache for future requests
-                if segment_content and segment_params.is_live:
-                    asyncio.create_task(
-                        set_cached_segment(segment_url, segment_content, ttl=settings.dash_segment_cache_ttl)
-                    )
+                try:
+                    segment_content = await download_file_with_retry(segment_url, proxy_headers.request)
+                    # Cache for future requests (synchronous to ensure it's cached before returning)
+                    if segment_content and segment_params.is_live:
+                        # Use create_task for non-blocking cache write, but segment is already downloaded
+                        asyncio.create_task(
+                            set_cached_segment(segment_url, segment_content, ttl=settings.dash_segment_cache_ttl)
+                        )
+                except Exception as dl_err:
+                    logger.warning(f"Direct download failed when prebuffer disabled: {dl_err}")
+                    segment_content = None
+
+        # If prebuffer returned None (lock timeout or coordination failure),
+        # check cache one more time - the download may have completed while we waited
+        # Then fall back to a direct download if still not cached.
+        # This is critical for live streams where the prebuffer may be busy
+        # downloading other segments/profiles.
+        if not segment_content:
+            # Final cache check - download may have completed during lock wait
+            segment_content = await get_cached_segment(segment_url)
+            if segment_content:
+                logger.info(f"Segment found in cache after prebuffer timeout: {segment_url}")
+            else:
+                logger.info(f"Prebuffer returned no content, falling back to direct download: {segment_url}")
+                try:
+                    segment_content = await download_file_with_retry(segment_url, proxy_headers.request)
+                    # Cache on success for future requests
+                    if segment_content and segment_params.is_live:
+                        asyncio.create_task(
+                            set_cached_segment(segment_url, segment_content, ttl=settings.dash_segment_cache_ttl)
+                        )
+                except Exception as dl_err:
+                    logger.warning(f"Direct download fallback also failed: {dl_err}")
 
         if not segment_content:
-            raise HTTPException(status_code=502, detail="Failed to download segment")
+            # Return 404 instead of 502 so players can skip and continue
+            # Most video players handle 404s gracefully by skipping the segment
+            raise HTTPException(status_code=404, detail="Segment unavailable")
 
         # Fetch init segment (uses its own cache)
         init_content = await get_cached_init_segment(
@@ -593,15 +879,33 @@ async def get_segment(
     except Exception as e:
         return handle_exceptions(e)
 
-    return await process_segment(
-        init_content,
-        segment_content,
-        segment_params.mime_type,
-        proxy_headers,
-        segment_params.key_id,
-        segment_params.key,
-        use_map=segment_params.use_map,
-    )
+    try:
+        response = await process_segment(
+            init_content,
+            segment_content,
+            segment_params.mime_type,
+            proxy_headers,
+            segment_params.key_id,
+            segment_params.key,
+            use_map=segment_params.use_map,
+            remux_ts=force_remux_ts,
+        )
+    except Exception as e:
+        return handle_exceptions(e)
+
+    # Cache processed segment for future requests (avoids re-decrypting/re-remuxing)
+    if is_processed and response.status_code == 200:
+        asyncio.create_task(
+            set_cached_processed_segment(
+                segment_url,
+                response.body,
+                segment_params.key_id,
+                should_remux,
+                ttl=settings.processed_segment_cache_ttl,
+            )
+        )
+
+    return response
 
 
 async def get_init_segment(

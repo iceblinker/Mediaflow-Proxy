@@ -15,7 +15,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import iterate_in_threadpool
 from starlette.requests import Request
 from starlette.types import Receive, Send, Scope
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm.asyncio import tqdm as tqdm_asyncio
 
 from mediaflow_proxy.configs import settings
@@ -39,10 +39,19 @@ class DownloadError(Exception):
         super().__init__(message)
 
 
+def retry_if_download_error_not_404(retry_state):
+    """Retry on DownloadError except for 404 errors."""
+    if retry_state.outcome.failed:
+        exception = retry_state.outcome.exception()
+        if isinstance(exception, DownloadError):
+            return exception.status_code != 404
+    return False
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(DownloadError),
+    retry=retry_if_download_error_not_404,
 )
 async def fetch_with_retry(
     session: ClientSession,
@@ -79,7 +88,7 @@ async def fetch_with_retry(
     except aiohttp.ClientResponseError as e:
         if e.status == 404:
             logger.debug(f"Segment not found (404): {url}")
-            raise
+            raise DownloadError(404, f"Not found (404): {url}")
         logger.error(f"HTTP error {e.status} while downloading {url}")
         raise DownloadError(e.status, f"HTTP error {e.status} while downloading {url}")
     except aiohttp.ClientError as e:
@@ -109,30 +118,55 @@ class Streamer:
         self.start_byte = 0
         self.end_byte = 0
         self.total_size = 0
+        # Store request details for potential retry during streaming
+        self._current_url: typing.Optional[str] = None
+        self._current_headers: typing.Optional[dict] = None
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(DownloadError),
+        retry=retry_if_download_error_not_404,
     )
-    async def create_streaming_response(self, url: str, headers: dict):
+    async def create_streaming_response(self, url: str, headers: dict, method: str = "GET"):
         """
         Creates and sends a streaming request.
 
         Args:
             url: The URL to stream from.
             headers: The headers to include in the request.
+            method: HTTP method to use (GET or HEAD). Defaults to GET.
+                    For HEAD requests, will fallback to GET if server doesn't support HEAD.
         """
+        # Store request details for potential retry during streaming
+        self._current_url = url
+        self._current_headers = headers.copy()
+
         try:
-            self.response = await self.session.get(url, headers=headers, proxy=self.proxy_url)
-            self.response.raise_for_status()
+            if method.upper() == "HEAD":
+                # Try HEAD first, fallback to GET if server doesn't support it
+                try:
+                    self.response = await self.session.head(url, headers=headers, proxy=self.proxy_url)
+                    self.response.raise_for_status()
+                except (aiohttp.ClientResponseError, aiohttp.ClientError) as head_error:
+                    # HEAD failed, fallback to GET (some servers don't support HEAD)
+                    logger.debug(f"HEAD request failed ({head_error}), falling back to GET")
+                    self.response = await self.session.get(url, headers=headers, proxy=self.proxy_url)
+                    self.response.raise_for_status()
+            else:
+                self.response = await self.session.get(url, headers=headers, proxy=self.proxy_url)
+                self.response.raise_for_status()
         except asyncio.TimeoutError:
             logger.warning("Timeout while creating streaming response")
             raise DownloadError(409, "Timeout while creating streaming response")
         except aiohttp.ClientResponseError as e:
             if e.status == 404:
                 logger.debug(f"Segment not found (404): {url}")
-                raise
+                raise DownloadError(404, f"Not found (404): {url}")
+            # Don't retry rate-limit errors (429, 509) - retrying while other connections
+            # are still active just wastes time. Let the player handle its own retry logic.
+            if e.status in (429, 509):
+                logger.warning(f"Rate limited ({e.status}) by upstream: {url}")
+                raise aiohttp.ClientResponseError(e.request_info, e.history, status=e.status, message=e.message)
             logger.error(f"HTTP error {e.status} while creating streaming response")
             raise DownloadError(e.status, f"HTTP error {e.status} while creating streaming response")
         except aiohttp.ClientError as e:
@@ -142,11 +176,52 @@ class Streamer:
             logger.error(f"Error creating streaming response: {e}")
             raise RuntimeError(f"Error creating streaming response: {e}")
 
+    async def _retry_connection(self, from_byte: int) -> bool:
+        """
+        Attempt to reconnect to the upstream using Range header.
+
+        Args:
+            from_byte: The byte position to resume from.
+
+        Returns:
+            bool: True if reconnection was successful, False otherwise.
+        """
+        if not self._current_url or not self._current_headers:
+            return False
+
+        # Close existing response if any
+        if self.response:
+            self.response.close()
+            self.response = None
+
+        # Create new headers with Range
+        retry_headers = self._current_headers.copy()
+        if self.total_size > 0:
+            retry_headers["Range"] = f"bytes={from_byte}-{self.total_size - 1}"
+        else:
+            retry_headers["Range"] = f"bytes={from_byte}-"
+
+        try:
+            self.response = await self.session.get(self._current_url, headers=retry_headers, proxy=self.proxy_url)
+            # Accept both 200 and 206 (Partial Content) as valid responses
+            if self.response.status in (200, 206):
+                logger.info(f"Successfully reconnected at byte {from_byte}")
+                return True
+            else:
+                logger.warning(f"Retry connection returned unexpected status: {self.response.status}")
+                return False
+        except Exception as e:
+            logger.warning(f"Failed to reconnect: {e}")
+            return False
+
     async def stream_content(
         self, transformer: typing.Optional[StreamTransformer] = None
     ) -> typing.AsyncGenerator[bytes, None]:
         """
         Stream content from the response, optionally applying a transformer.
+
+        Includes automatic retry logic when upstream disconnects mid-stream,
+        using Range headers to resume from the last successful byte.
 
         Args:
             transformer: Optional StreamTransformer to apply host-specific
@@ -159,74 +234,83 @@ class Streamer:
         if not self.response:
             raise RuntimeError("No response available for streaming")
 
-        try:
-            self.parse_content_range()
+        retry_count = 0
+        max_retries = settings.upstream_retry_attempts if settings.upstream_retry_on_disconnect else 0
 
-            # Create async generator from response content
-            async def raw_chunks():
-                async for chunk in self.response.content.iter_any():
-                    yield chunk
+        while True:
+            try:
+                self.parse_content_range()
 
-            # Choose the chunk source based on whether we have a transformer
-            if transformer:
-                chunk_source = transformer.transform(raw_chunks())
-            else:
-                chunk_source = raw_chunks()
+                # Create async generator from response content
+                async def raw_chunks():
+                    async for chunk in self.response.content.iter_any():
+                        yield chunk
 
-            if settings.enable_streaming_progress:
-                with tqdm_asyncio(
-                    total=self.total_size,
-                    initial=self.start_byte,
-                    unit="B",
-                    unit_scale=True,
-                    unit_divisor=1024,
-                    desc="Streaming",
-                    ncols=100,
-                    mininterval=1,
-                ) as self.progress_bar:
+                # Choose the chunk source based on whether we have a transformer
+                # Note: Transformer state may not survive reconnection properly for all transformers
+                if transformer and retry_count == 0:
+                    chunk_source = transformer.transform(raw_chunks())
+                else:
+                    chunk_source = raw_chunks()
+
+                if settings.enable_streaming_progress:
+                    with tqdm_asyncio(
+                        total=self.total_size,
+                        initial=self.start_byte,
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                        desc="Streaming",
+                        ncols=100,
+                        mininterval=1,
+                    ) as self.progress_bar:
+                        async for chunk in chunk_source:
+                            yield chunk
+                            self.bytes_transferred += len(chunk)
+                            self.progress_bar.update(len(chunk))
+                else:
                     async for chunk in chunk_source:
                         yield chunk
                         self.bytes_transferred += len(chunk)
-                        self.progress_bar.update(len(chunk))
-            else:
-                async for chunk in chunk_source:
-                    yield chunk
-                    self.bytes_transferred += len(chunk)
 
-        except asyncio.TimeoutError:
-            logger.warning("Timeout while streaming")
-            raise DownloadError(409, "Timeout while streaming")
-        except aiohttp.ServerDisconnectedError as e:
-            # Special handling for connection closed errors
-            logger.warning(f"Remote server closed connection prematurely: {e}")
-            if self.bytes_transferred > 0:
-                logger.info(
-                    f"Partial content received ({self.bytes_transferred} bytes). Continuing with available data."
-                )
+                # Successfully completed streaming
                 return
-            else:
-                raise DownloadError(502, f"Remote server closed connection without sending any data: {e}")
-        except GeneratorExit:
-            logger.info("Streaming session stopped by the user")
-        except aiohttp.ClientPayloadError as e:
-            # Handle network read errors gracefully
-            logger.warning(f"ClientPayloadError while streaming: {e}")
-            if self.bytes_transferred > 0:
-                logger.info(
-                    f"Partial content received ({self.bytes_transferred} bytes) before error. Graceful termination."
-                )
+
+            except asyncio.TimeoutError:
+                logger.warning("Timeout while streaming")
+                raise DownloadError(409, "Timeout while streaming")
+            except (aiohttp.ServerDisconnectedError, aiohttp.ClientPayloadError, aiohttp.ClientError) as e:
+                # Handle connection errors with potential retry
+                error_type = type(e).__name__
+                logger.warning(f"{error_type} while streaming after {self.bytes_transferred} bytes: {e}")
+
+                # Check if we should retry
+                if retry_count < max_retries and self.bytes_transferred > 0:
+                    retry_count += 1
+                    resume_from = self.start_byte + self.bytes_transferred
+                    logger.info(f"Attempting reconnection (retry {retry_count}/{max_retries}) from byte {resume_from}")
+
+                    # Wait before retry
+                    await asyncio.sleep(settings.upstream_retry_delay)
+
+                    if await self._retry_connection(resume_from):
+                        # Successfully reconnected, continue the loop to resume streaming
+                        continue
+                    else:
+                        logger.warning(f"Reconnection failed on retry {retry_count}")
+
+                # No more retries or reconnection failed
+                if self.bytes_transferred > 0:
+                    logger.info(
+                        f"Partial content received ({self.bytes_transferred} bytes). "
+                        f"Graceful termination after {retry_count} retry attempts."
+                    )
+                    return
+                else:
+                    raise DownloadError(502, f"{error_type} while streaming: {e}")
+            except GeneratorExit:
+                logger.info("Streaming session stopped by the user")
                 return
-            else:
-                raise DownloadError(502, f"ClientPayloadError while streaming: {e}")
-        except aiohttp.ClientError as e:
-            logger.warning(f"ClientError while streaming: {e}")
-            if self.bytes_transferred > 0:
-                logger.info(
-                    f"Partial content received ({self.bytes_transferred} bytes) before error. Graceful termination."
-                )
-                return
-            else:
-                raise DownloadError(502, f"ClientError while streaming: {e}")
 
     @staticmethod
     def format_bytes(size) -> str:
@@ -423,12 +507,16 @@ def encode_mediaflow_proxy_url(
 
     # Add headers if provided (always use lowercase prefix for consistency)
     # Filter out empty values to avoid URLs like &h_if-range=&h_referer=...
+    # Also exclude dynamic per-request headers (range, if-range) that are already handled
+    # via SUPPORTED_REQUEST_HEADERS from the player's actual request. Encoding them as h_
+    # query params would bake in stale values that override the player's real headers on
+    # subsequent requests (e.g., when seeking to a different position).
     if request_headers:
         query_params.update(
             {
                 key if key.lower().startswith("h_") else f"h_{key}": value
                 for key, value in request_headers.items()
-                if value  # Skip empty/None values
+                if value and (key.lower().removeprefix("h_") not in SUPPORTED_REQUEST_HEADERS)
             }
         )
     if response_headers:
